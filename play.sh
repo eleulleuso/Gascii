@@ -194,10 +194,10 @@ MODE_CHOICE=${MODE_CHOICE:-1}
 
 if [[ "$MODE_CHOICE" == "1" ]]; then
     MODE="rgb"
-    FPS=120
+    FPS=24
 else
     MODE="ascii"
-    FPS=120
+    FPS=24
 fi
 
 # ============================================================

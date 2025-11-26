@@ -31,21 +31,18 @@ impl VideoDecoder {
         // 1. Hardware Acceleration (macOS M-series Optimization)
         // CRITICAL: Must be applied BEFORE input file to act as a Decoder
         if std::env::consts::OS == "macos" {
-            println!("DEBUG: Enabling macOS Hardware Acceleration (h264_videotoolbox)");
-            command.args(&["-c:v", "h264_videotoolbox"]);
-            command.args(&["-allow_sw", "1"]); 
+            println!("DEBUG: Enabling macOS Hardware Acceleration (videotoolbox)");
+            command.args(&["-hwaccel", "videotoolbox"]);
         }
 
         // Input file
         command.input(video_path);
 
-        // 2. Filter Chain with Optimized 120fps interpolation
-        // OPTIMIZATION:
-        // 1. Scale FIRST (reduce pixels)
-        // 2. Use 'obmc' instead of 'aobmc' (Faster motion compensation)
-        // 3. Use 'epzs' motion estimation (Faster than default)
+        // 2. Filter Chain (Native FPS - No Interpolation)
+        // PERFORMANCE FIX: Removed minterpolate (was causing 0.397x speed bottleneck)
+        // Video will play at native 24fps with perfect audio sync
         let filter = format!(
-            "scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,minterpolate=fps=120:mi_mode=mci:mc_mode=obmc:me=epzs:me_mode=bidir,format=rgb24",
+            "scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,format=rgb24",
             width, height, width, height
         );
         

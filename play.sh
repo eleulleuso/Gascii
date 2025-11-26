@@ -197,7 +197,7 @@ if [[ "$MODE_CHOICE" == "1" ]]; then
     FPS=120
 else
     MODE="ascii"
-    FPS=30
+    FPS=120
 fi
 
 # ============================================================
@@ -219,10 +219,10 @@ MAX_CHARS_Y=$((TERM_HEIGHT - MARGIN_Y))
 # We FORCE a 16:9 aspect ratio for the canvas to ensure the video looks correct.
 # This calculates the largest 16:9 rectangle that fits in the terminal.
 
-# Smart Block Mode (Ultimate):
-# Width = Terminal Width * 2 (2x)
+# Half-Block Mode (Stable):
+# Width = Terminal Width (1x)
 # Height = Terminal Height * 2 (2x)
-AVAIL_W=$((MAX_CHARS_X * 2))
+AVAIL_W=$MAX_CHARS_X
 AVAIL_H=$((MAX_CHARS_Y * 2))
 
 if [[ "$MODE" == "ascii" ]]; then
@@ -230,22 +230,19 @@ if [[ "$MODE" == "ascii" ]]; then
     AVAIL_H=$MAX_CHARS_Y
 fi
 
-# Target 16:9 Ratio (1.777...)
-# Try fitting to width first
+# Target 16:9 Ratio
 WIDTH=$AVAIL_W
 HEIGHT=$(awk -v w=$WIDTH "BEGIN {printf \"%.0f\", w / 1.7777}")
 
-# If height exceeds available height, fit to height instead
 if [[ $HEIGHT -gt $AVAIL_H ]]; then
     HEIGHT=$AVAIL_H
     WIDTH=$(awk -v h=$HEIGHT "BEGIN {printf \"%.0f\", h * 1.7777}")
 fi
 
-# Ensure even numbers for alignment
 WIDTH=$((WIDTH / 2 * 2))
 HEIGHT=$((HEIGHT / 2 * 2))
 
-echo -e "${GREEN}🎯 Canvas Size: ${WIDTH}x${HEIGHT} (Smart Block 16:9)${RESET}"
+echo -e "${GREEN}🎯 Canvas Size: ${WIDTH}x${HEIGHT} (Half-Block 16:9)${RESET}"
 
 # ──────────────────────────────────────────────────────────────
 # 9. LAUNCH RUST PLAYER (Real-time)
@@ -257,10 +254,17 @@ echo "   (Direct 4K/60fps Rendering Engine)"
 echo ""
 
 # Build if needed
-if [[ ! -f "$RUST_BIN" ]]; then
-    echo -e "${YELLOW}Building release binary...${RESET}"
-    cargo build --release
+# ALWAYS Build to ensure latest code is used
+echo -e "${YELLOW}Compiling latest version...${RESET}"
+cargo build --release
+if [[ $? -ne 0 ]]; then
+    echo -e "${MAGENTA}❌ Build Failed!${RESET}"
+    exit 1
 fi
+
+# Debug Info
+ls -l "$RUST_BIN"
+echo "Binary Hash: $(shasum "$RUST_BIN" | awk '{print $1}')"
 
 # Construct the command array
 PLAY_LIVE_CMD=("$RUST_BIN" "play-live" \

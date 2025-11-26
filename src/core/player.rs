@@ -26,11 +26,11 @@ pub fn play_realtime(
         audio.play(path)?;
     }
 
-    // 3. Start Video Decoder (HW Accelerated)
-    println!("DEBUG: Initializing Video Decoder...");
+    // 3. Start Video Decoder
+    println!("Initializing video decoder...");
     let mut decoder = crate::core::video_decoder::VideoDecoder::new(video_path, width, height, fps)?;
     let mut stdout = decoder.child.take_stdout().context("Failed to take stdout")?;
-    println!("DEBUG: Video Decoder Started. Reading stream...");
+    println!("Video decoder started. Check debug.log for details.");
     
     // 4. Initialize Frame Processor (Rayon)
     // Note: width/height passed here are the "canvas" size (2x terminal size for QuadBlock)
@@ -92,25 +92,31 @@ pub fn play_realtime(
                 frame_idx += 1;
             }
             Err(e) => {
-                if frame_idx == 0 {
-                    eprintln!("DEBUG: Failed to read first frame! Error: {}", e);
+                use std::fs::OpenOptions;
+                use std::io::Write as IoWrite;
+                
+                if let Ok(mut log) = OpenOptions::new().append(true).open("debug.log") {
+                    writeln!(log, "\n=== Playback Error ===").ok();
+                    writeln!(log, "read_exact() failed at frame {}", frame_idx).ok();
+                    writeln!(log, "Error: {}", e).ok();
                     
-                    // Try to read stderr from FFmpeg
-                    use std::io::Read;
-                    if let Some(stderr) = decoder.child.as_inner_mut().stderr.as_mut() {
-                        let mut err_msg = String::new();
-                        // Read up to 1KB of error log
-                        let mut buf = [0u8; 1024];
-                        if let Ok(n) = stderr.read(&mut buf) {
-                            err_msg = String::from_utf8_lossy(&buf[..n]).to_string();
-                        }
-                        eprintln!("\n=== FFmpeg Error Log ===\n{}\n========================", err_msg);
+                    if frame_idx == 0 {
+                        writeln!(log, "\nCRITICAL: Failed to read first frame!").ok();
+                        writeln!(log, "This means FFmpeg produced no output.").ok();
+                        writeln!(log, "Possible causes:").ok();
+                        writeln!(log, "  1. Invalid filter syntax").ok();
+                        writeln!(log, "  2. Video codec not supported").ok();
+                        writeln!(log, "  3. File read error").ok();
+                        writeln!(log, "  4. stereo3d filter requires Side-by-Side input").ok();
+                        eprintln!("\n❌ ERROR: Failed to start playback. Check debug.log for details.");
                     } else {
-                        eprintln!("DEBUG: Could not access FFmpeg stderr.");
+                        writeln!(log, "Total frames rendered: {}", frame_idx).ok();
+                        eprintln!("\n✓ Playback ended at frame {}. Check debug.log for details.", frame_idx);
                     }
+                    writeln!(log, "=====================\n").ok();
                 }
                 break; 
-            }, // EOF or Error
+            },
         }
     }
 

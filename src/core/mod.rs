@@ -1,7 +1,9 @@
-pub mod display_manager;
-pub mod frame_manager;
 pub mod audio_manager;
+pub mod display_manager;
 pub mod extractor;
+pub mod fps_detector;
+pub mod frame_buffer;
+pub mod frame_manager;
 pub mod player;
-pub mod video_decoder;
 pub mod processor;
+pub mod video_decoder;

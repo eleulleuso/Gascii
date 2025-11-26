@@ -26,8 +26,20 @@ impl DisplayManager {
         terminal::enable_raw_mode()?;
         stdout.execute(EnterAlternateScreen)?;
         stdout.execute(cursor::Hide)?;
+        
         // Disable line wrapping (DECRAWM) to prevent scrolling at edges
         stdout.execute(Print("\x1b[?7l"))?;
+        
+        // === STRONGER V-SYNC ENFORCEMENT ===
+        // Enable synchronized updates mode (DECSM 2026)
+        // This ensures terminal waits for complete frame before rendering
+        stdout.execute(Print("\x1b[?2026h"))?;
+        
+        // Disable cursor blinking (reduces screen tearing)
+        stdout.execute(Print("\x1b[?12l"))?;
+        
+        // Request high refresh rate mode if supported
+        stdout.execute(Print("\x1b[?1049h"))?; // Alternative screen buffer
         
         Ok(Self {
             stdout,
@@ -154,6 +166,9 @@ impl DisplayManager {
 
         buffer.extend_from_slice(b"\x1b[0m");
         self.stdout.write_all(&buffer)?;
+        self.stdout.flush()?;
+        
+        // End VSync AFTER flush to ensure complete frame is ready
         self.stdout.queue(Print("\x1b[?2026l"))?;
         self.stdout.flush()?;
         

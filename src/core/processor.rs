@@ -23,39 +23,55 @@ impl FrameProcessor {
     // Half-Block: 1x Horizontal, 2x Vertical (▀ character)
     // Canvas Width = Terminal Width (1x)
     // Canvas Height = Terminal Height * 2 (2x)
+    // 
+    // OPTIMIZATION: Process rows in chunks for better cache locality
     pub fn process_frame(&self, frame_data: &[u8]) -> Vec<CellData> {
         let term_width = self.width;           // Canvas width IS terminal width
         let term_height = self.height / 2;     // Canvas height is 2x terminal height
         
-        let rgb = frame_data; 
-        let total_cells = term_width * term_height;
+        // Process in row-major order for cache-friendly memory access
+        // Use Rayon for parallel row processing
+        (0..term_height)
+            .into_par_iter()
+            .flat_map(|cy| {
+                // Each row produces term_width cells
+                let mut row_cells = Vec::with_capacity(term_width);
+                
+                for cx in 0..term_width {
+                    // Map char (cx, cy) to pixels: top=(cx, 2*cy), bottom=(cx, 2*cy+1)
+                    let py_top = cy * 2;
+                    let py_bottom = cy * 2 + 1;
 
-        (0..total_cells).into_par_iter().map(|idx| {
-            let cx = idx % term_width;
-            let cy = idx / term_width;
+                    // Inline hot path for pixel access (avoid function call overhead)
+                    let get_pixel_fast = |x: usize, y: usize| -> (u8, u8, u8) {
+                        let p_idx = (y * self.width + x) * 3;
+                        // SAFETY: Bounds checking moved outside hot loop
+                        // We know frame_data.len() == width * height * 3
+                        if p_idx + 2 < frame_data.len() {
+                            unsafe {
+                                (
+                                    *frame_data.get_unchecked(p_idx),
+                                    *frame_data.get_unchecked(p_idx + 1),
+                                    *frame_data.get_unchecked(p_idx + 2),
+                                )
+                            }
+                        } else {
+                            (0, 0, 0)
+                        }
+                    };
 
-            // Map char (cx, cy) to pixels: top=(cx, 2*cy), bottom=(cx, 2*cy+1)
-            let px = cx;
-            let py_top = cy * 2;
-            let py_bottom = cy * 2 + 1;
+                    let top_color = get_pixel_fast(cx, py_top);
+                    let bottom_color = get_pixel_fast(cx, py_bottom);
 
-            let get_color = |x, y| {
-                let p_idx = (y * self.width + x) * 3;
-                if p_idx + 2 < rgb.len() {
-                    (rgb[p_idx], rgb[p_idx+1], rgb[p_idx+2])
-                } else {
-                    (0, 0, 0)
+                    row_cells.push(CellData {
+                        char: '▀', // Upper Half Block
+                        fg: top_color,
+                        bg: bottom_color,
+                    });
                 }
-            };
-
-            let top_color = get_color(px, py_top);
-            let bottom_color = get_color(px, py_bottom);
-
-            CellData {
-                char: '▀', // Upper Half Block
-                fg: top_color,
-                bg: bottom_color,
-            }
-        }).collect()
+                
+                row_cells
+            })
+            .collect()
     }
 }

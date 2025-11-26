@@ -35,6 +35,7 @@ impl FrameBuffer {
         self.queue.len() as f32 / self.capacity as f32
     }
 
+    #[allow(dead_code)]
     /// Check if buffer is empty
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()

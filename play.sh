@@ -39,6 +39,18 @@ fi
 # Clear Screen
 clear
 
+# 1.5 Ghostty Integration (Auto-Relaunch)
+# If ghosy.sh exists and we are not already in the wrapper, relaunch in Ghostty
+GHOSY_CONFIG="$PROJECT_DIR/ghosy.sh"
+if [[ -f "$GHOSY_CONFIG" ]] && [[ -z "$GHOSY_WRAPPER" ]]; then
+    if command -v ghostty >/dev/null 2>&1; then
+        echo -e "${PURPLE}👻 Ghostty Detected! Relaunching with optimized config...${RESET}"
+        export GHOSY_WRAPPER=1
+        # Launch Ghostty with the config and execute this script again
+        exec ghostty --config-file="$GHOSY_CONFIG" -e "$0" "$@"
+    fi
+fi
+
 # 2. Detect Platform Information
 PLATFORM_JSON=$("$RUST_BIN" detect 2>/dev/null)
 

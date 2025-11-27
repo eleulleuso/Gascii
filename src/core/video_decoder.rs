@@ -34,7 +34,9 @@ impl VideoDecoder {
         let mut command = FfmpegCommand::new();
         
         // 1. Hardware Acceleration (macOS M-series Optimization)
-        // CRITICAL: Must be applied BEFORE input file to act as a Decoder
+        // CRITICAL: Use -hwaccel videotoolbox WITHOUT -hwaccel_output_format
+        // videotoolbox_vld is GPU-only format incompatible with scale filter
+        // FFmpeg will automatically handle format conversion for filters
         if std::env::consts::OS == "macos" {
             println!("DEBUG: Enabling macOS Hardware Acceleration (videotoolbox)");
             command.args(&["-hwaccel", "videotoolbox"]);
@@ -43,11 +45,10 @@ impl VideoDecoder {
         // Input file
         command.input(video_path);
 
-        // 2. Filter Chain (Native FPS - No Interpolation)
-        // PERFORMANCE FIX: Removed minterpolate (was causing 0.397x speed bottleneck)
-        // Video will play at native 24fps with perfect audio sync
+        // 2. Filter Chain (Optimized Quality)
+        // Lanczos scaling only - unsharp removed (amplifies noise on live-action video)
         let filter = format!(
-            "scale={}:{}:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,format=rgb24",
+            "scale={}:{}:flags=lanczos:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,format=rgb24",
             width, height, width, height
         );
         
@@ -76,7 +77,7 @@ impl VideoDecoder {
         let fps_detector_clone = Arc::clone(&fps_detector);
 
         // Spawn stderr reader thread to capture and parse FFmpeg output
-        let stderr_handle = if let Some(stderr) = child.take_stderr() {
+        let stderr_handle = if let Some(stderr) = child.as_inner_mut().stderr.take() {
             use std::io::BufRead;
             use std::fs::OpenOptions;
             use std::io::Write as IoWrite;
@@ -138,6 +139,7 @@ impl VideoDecoder {
         Ok(VideoDecoder {
             child,
             stderr_handle,
+            fps_detector,
         })
     }
 }

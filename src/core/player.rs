@@ -80,11 +80,14 @@ pub fn play_realtime(
     thread::sleep(Duration::from_millis(200));
     
     // Warn if FPS mismatch
-    if (actual_fps - fps as f64).abs() > 0.5 {
+    // Warn if FPS mismatch (only if user explicitly requested a specific FPS)
+    if fps > 0 && (actual_fps - fps as f64).abs() > 0.5 {
         println!("⚠️  FPS MISMATCH DETECTED:");
         println!("   User requested: {}fps", fps);
         println!("   Video actual:   {:.2}fps", actual_fps);
         println!("   Using actual video FPS for sync");
+    } else if fps == 0 {
+        println!("ℹ️  Auto-detected Video FPS: {:.2}", actual_fps);
     }
     
     let frame_duration = Duration::from_secs_f64(1.0 / actual_fps);

@@ -18,6 +18,7 @@ pub struct DisplayManager {
     stdout: Stdout,
     mode: DisplayMode,
     last_cells: Option<Vec<crate::core::processor::CellData>>,
+    render_buffer: Vec<u8>,
 }
 
 impl DisplayManager {
@@ -45,6 +46,7 @@ impl DisplayManager {
             stdout,
             mode,
             last_cells: None,
+            render_buffer: Vec::with_capacity(64 * 1024), // Pre-allocate 64KB
         })
     }
 
@@ -57,6 +59,8 @@ impl DisplayManager {
     // Optimized Diffing Renderer
     // Takes a grid of CellData (calculated by Processor) and updates the terminal.
     pub fn render_diff(&mut self, cells: &[crate::core::processor::CellData], width: usize) -> Result<()> {
+        let start_render = std::time::Instant::now();
+        
         // VSync Begin
         self.stdout.queue(Print("\x1b[?2026h"))?;
 
@@ -69,12 +73,9 @@ impl DisplayManager {
 
         let last_cells = self.last_cells.as_mut().unwrap();
         
-        // OPTIMIZATION: Pre-allocate buffer with a more accurate size estimate
-        // Each cell update takes approx 15-20 bytes (cursor move + color + char)
-        // If full redraw, size is large. If diff, size is small.
-        // We use a safe upper bound estimate to avoid reallocations.
-        let estimated_size = if force_redraw { cells.len() * 20 } else { cells.len() * 5 };
-        let mut buffer = Vec::with_capacity(estimated_size);
+        // Reuse buffer
+        self.render_buffer.clear();
+        let buffer = &mut self.render_buffer;
         
         let mut last_fg: Option<(u8, u8, u8)> = None;
         let mut last_bg: Option<(u8, u8, u8)> = None;
@@ -92,7 +93,6 @@ impl DisplayManager {
         let mut cursor_y: i32 = -1;
 
         // OPTIMIZATION: Unified loop for both redraw and diff
-        // This reduces code duplication and allows for better branch prediction
         for (i, cell) in cells.iter().enumerate() {
             if force_redraw || cell != &last_cells[i] {
                 let x = (i % width) as u16;
@@ -109,7 +109,6 @@ impl DisplayManager {
                 
                 // Move cursor only if not already at the correct position
                 if cursor_x != target_x as i32 || cursor_y != target_y as i32 {
-                    // OPTIMIZATION: Use direct byte pushing instead of write! macro for cursor move
                     buffer.extend_from_slice(b"\x1b[");
                     buffer.extend_from_slice((target_y + 1).to_string().as_bytes());
                     buffer.extend_from_slice(b";");
@@ -122,7 +121,6 @@ impl DisplayManager {
                 
                 // Color updates
                 if Some(cell.fg) != last_fg { 
-                    // OPTIMIZATION: Direct byte pushing for colors
                     buffer.extend_from_slice(b"\x1b[38;2;");
                     buffer.extend_from_slice(cell.fg.0.to_string().as_bytes());
                     buffer.extend_from_slice(b";");
@@ -158,12 +156,27 @@ impl DisplayManager {
         }
 
         buffer.extend_from_slice(b"\x1b[0m");
-        self.stdout.write_all(&buffer)?;
+        self.stdout.write_all(buffer)?;
         self.stdout.flush()?;
         
         // End VSync AFTER flush to ensure complete frame is ready
         self.stdout.queue(Print("\x1b[?2026l"))?;
         self.stdout.flush()?;
+        
+        let render_time = start_render.elapsed();
+        if render_time.as_millis() > 10 {
+             use std::fs::OpenOptions;
+             use std::io::Write;
+             let mut log_path = std::env::current_dir().unwrap_or_default();
+             log_path.push("debug.log");
+             
+             if let Ok(mut file) = OpenOptions::new().append(true).open(log_path) {
+                 let _ = writeln!(file, "SLOW RENDER: {}us | Cells: {}", 
+                     render_time.as_micros(),
+                     cells.len()
+                 );
+             }
+        }
         
         Ok(())
     }

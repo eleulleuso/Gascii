@@ -57,7 +57,7 @@ enum Commands {
         width: u32,
         #[arg(short, long, default_value_t = 65)]
         height: u32,
-        #[arg(short, long, default_value_t = 120)]
+        #[arg(short, long, default_value_t = 0)]
         fps: u32,
         #[arg(short, long, value_enum, default_value_t = DisplayMode::Rgb)]
         mode: DisplayMode,

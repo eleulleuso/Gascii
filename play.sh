@@ -72,8 +72,22 @@ CHAR_WIDTH=$(echo "$PLATFORM_JSON" | grep -o '"char_width": [0-9]*' | grep -o '[
 CHAR_HEIGHT=$(echo "$PLATFORM_JSON" | grep -o '"char_height": [0-9]*' | grep -o '[0-9]*')
 
 # Fallback defaults
-TERM_WIDTH=${TERM_WIDTH:-80}
-TERM_HEIGHT=${TERM_HEIGHT:-24}
+# Detect terminal size
+if command -v tput &> /dev/null; then
+    TERM_WIDTH=$(tput cols)
+    TERM_HEIGHT=$(tput lines)
+else
+    TERM_WIDTH=$(stty size | cut -d' ' -f2)
+    TERM_HEIGHT=$(stty size | cut -d' ' -f1)
+fi
+
+# Fallback if detection fails
+if [[ -z "$TERM_WIDTH" ]] || [[ "$TERM_WIDTH" -eq 0 ]]; then
+    TERM_WIDTH=80
+fi
+if [[ -z "$TERM_HEIGHT" ]] || [[ "$TERM_HEIGHT" -eq 0 ]]; then
+    TERM_HEIGHT=24
+fi
 SCREEN_WIDTH=${SCREEN_WIDTH:-1920}
 SCREEN_HEIGHT=${SCREEN_HEIGHT:-1080}
 CHAR_WIDTH=${CHAR_WIDTH:-10}
@@ -206,18 +220,43 @@ MODE_CHOICE=${MODE_CHOICE:-1}
 
 if [[ "$MODE_CHOICE" == "1" ]]; then
     MODE="rgb"
-    FPS=24
 else
     MODE="ascii"
-    FPS=24
+fi
+
+# ============================================================
+# 7.5 Resolution Scale Selection
+# ============================================================
+echo ""
+echo -e "${WHITE}${BOLD}RESOLUTION SCALE${RESET}"
+echo -e "  ${CYAN}[1]${RESET} ${GREEN}100%${RESET} (Native - Best Quality)"
+echo -e "  ${CYAN}[2]${RESET} ${YELLOW}75%${RESET}  (Balanced)"
+echo -e "  ${CYAN}[3]${RESET} ${MAGENTA}50%${RESET}  (Performance/Retro)"
+echo -e "  ${CYAN}[4]${RESET} ${BLUE}Manual${RESET} (Enter Width)"
+echo -e "${BLUE} ──────────────────────────────────────────────────────────────${RESET}"
+read -p "$(echo -e ${WHITE}"Select Scale [1]: "${RESET})" SCALE_CHOICE
+SCALE_CHOICE=${SCALE_CHOICE:-1}
+
+SCALE_FACTOR=1.0
+MANUAL_WIDTH=0
+
+if [[ "$SCALE_CHOICE" == "2" ]]; then
+    SCALE_FACTOR=0.75
+elif [[ "$SCALE_CHOICE" == "3" ]]; then
+    SCALE_FACTOR=0.5
+elif [[ "$SCALE_CHOICE" == "4" ]]; then
+    read -p "Enter Target Width (e.g., 200): " MANUAL_WIDTH
 fi
 
 # ============================================================
 # 8. Calculate Dimensions
 # ============================================================
+# Debug detected size
+echo -e "${YELLOW}DEBUG: Detected Terminal Size: ${TERM_WIDTH}x${TERM_HEIGHT}${RESET}"
+
 # Minimal safety margin to prevent edge artifacts
-MARGIN_X=2
-MARGIN_Y=2
+MARGIN_X=0
+MARGIN_Y=0
 
 # Ensure margins don't exceed terminal size
 if [[ $MARGIN_X -ge $TERM_WIDTH ]]; then MARGIN_X=0; fi
@@ -227,34 +266,43 @@ if [[ $MARGIN_Y -ge $TERM_HEIGHT ]]; then MARGIN_Y=0; fi
 MAX_CHARS_X=$((TERM_WIDTH - MARGIN_X))
 MAX_CHARS_Y=$((TERM_HEIGHT - MARGIN_Y))
 
-# Calculate frame dimensions to fit video aspect ratio
-# We FORCE a 16:9 aspect ratio for the canvas to ensure the video looks correct.
-# This calculates the largest 16:9 rectangle that fits in the terminal.
+if [[ "$MANUAL_WIDTH" -gt 0 ]]; then
+    WIDTH=$MANUAL_WIDTH
+    # Calculate height based on aspect ratio (approx 16:9) or just use terminal height ratio
+    # Let's just use the terminal's aspect ratio to fill height proportionally
+    # Or better, just use the terminal height scaled by the width ratio?
+    # Actually, if user sets width, we should probably auto-calc height to keep aspect ratio?
+    # But for "Stretch", we want to fill.
+    # Let's assume if they set Manual Width, they want to fit that width.
+    # We'll set height to fit the terminal aspect or just use available height.
+    
+    # Simple approach: If manual width is set, use it. Calculate height to maintain 16:9 roughly?
+    # No, user wants to control size.
+    # Let's just set WIDTH to manual, and HEIGHT to proportional terminal height?
+    # Let's default HEIGHT to MAX_CHARS_Y (full height) but scaled if WIDTH is scaled.
+    
+    # Actually, let's just ask for Height too if Manual.
+    read -p "Enter Target Height (e.g., 50): " MANUAL_HEIGHT
+    HEIGHT=$MANUAL_HEIGHT
+else
+    # Target: FILL TERMINAL (Stretch)
+    # We use the full available terminal space.
+    WIDTH=$(awk -v w=$MAX_CHARS_X -v s=$SCALE_FACTOR "BEGIN {printf \"%.0f\", w * s}")
+    HEIGHT=$(awk -v h=$MAX_CHARS_Y -v s=$SCALE_FACTOR "BEGIN {printf \"%.0f\", h * s}")
 
-# Half-Block Mode (Stable):
-# Width = Terminal Width (1x)
-# Height = Terminal Height * 2 (2x)
-AVAIL_W=$MAX_CHARS_X
-AVAIL_H=$((MAX_CHARS_Y * 2))
-
-if [[ "$MODE" == "ascii" ]]; then
-    AVAIL_W=$MAX_CHARS_X
-    AVAIL_H=$MAX_CHARS_Y
+    if [[ "$MODE" == "rgb" ]]; then
+        # In RGB mode, we use half-blocks, so vertical resolution is doubled
+        HEIGHT=$(awk -v h=$MAX_CHARS_Y -v s=$SCALE_FACTOR "BEGIN {printf \"%.0f\", (h * 2) * s}")
+    fi
 fi
 
-# Target 16:9 Ratio
-WIDTH=$AVAIL_W
-HEIGHT=$(awk -v w=$WIDTH "BEGIN {printf \"%.0f\", w / 1.7777}")
-
-if [[ $HEIGHT -gt $AVAIL_H ]]; then
-    HEIGHT=$AVAIL_H
-    WIDTH=$(awk -v h=$HEIGHT "BEGIN {printf \"%.0f\", h * 1.7777}")
-fi
-
+# Ensure even dimensions for block characters
 WIDTH=$((WIDTH / 2 * 2))
 HEIGHT=$((HEIGHT / 2 * 2))
 
-echo -e "${GREEN}🎯 Canvas Size: ${WIDTH}x${HEIGHT} (Half-Block 16:9)${RESET}"
+# DEBUG: Print calculated dimensions
+echo -e "${YELLOW}DEBUG: Terminal ${TERM_WIDTH}x${TERM_HEIGHT} -> Canvas ${WIDTH}x${HEIGHT} (Stretch)${RESET}"
+echo -e "${GREEN}🎯 Canvas Size: ${WIDTH}x${HEIGHT} (Full Screen)${RESET}"
 
 # ──────────────────────────────────────────────────────────────
 # 9. LAUNCH RUST PLAYER (Real-time)
@@ -283,7 +331,8 @@ PLAY_LIVE_CMD=("$RUST_BIN" "play-live" \
     "--video" "$VIDEO_PATH" \
     "--width" "$WIDTH" \
     "--height" "$HEIGHT" \
-    "--fps" "$FPS" \
+    "--width" "$WIDTH" \
+    "--height" "$HEIGHT" \
     "--mode" "$MODE")
 
 if [[ -n "$AUDIO_PATH" ]]; then

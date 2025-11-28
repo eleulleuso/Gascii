@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::{
     cursor,
-    style::{self, Color, Print, SetBackgroundColor, SetForegroundColor},
+    style::Print,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
     QueueableCommand,
     ExecutableCommand,

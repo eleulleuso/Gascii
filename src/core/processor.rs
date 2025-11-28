@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use std::sync::Arc;
+
 
 // Represents a single character cell on the terminal
 #[derive(Clone, Copy, PartialEq, Debug)]

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use ffmpeg_sidecar::command::FfmpegCommand;
+
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -107,7 +107,7 @@ pub fn play_realtime(
     let mut frames_since_report = 0;
     
     // Precision timing tracking
-    let mut last_frame_time = Instant::now();
+    let mut _last_frame_time = Instant::now();
     let mut cumulative_drift = Duration::ZERO;
     let mut max_drift = Duration::ZERO;
     let mut total_sleep_time = Duration::ZERO;
@@ -171,7 +171,7 @@ pub fn play_realtime(
             let frame_render_time = frame_end.duration_since(frame_start);
             
             // Track frame timing
-            last_frame_time = frame_end;
+            _last_frame_time = frame_end;
             frame_idx += 1;
             frames_since_report += 1;
 

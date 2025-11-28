@@ -6,6 +6,23 @@ use crate::core::display_manager::DisplayMode;
 use crate::core::player;
 use opencv::prelude::*;
 
+/// 디버그 로그 파일에 메시지를 기록합니다.
+#[cfg(target_os = "macos")]
+fn write_debug_log(message: &str) {
+    use std::io::Write;
+    let mut log_path = std::env::current_dir().unwrap_or_default();
+    log_path.push("debug.log");
+    
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path) 
+    {
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let _ = writeln!(file, "[{}] {}", timestamp, message);
+    }
+}
+
 /// 터미널 종류를 감지합니다.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy)]
@@ -21,6 +38,7 @@ enum TerminalType {
 impl TerminalType {
     fn detect() -> Self {
         if let Ok(term_program) = std::env::var("TERM_PROGRAM") {
+            write_debug_log(&format!("TERM_PROGRAM: {}", term_program));
             match term_program.as_str() {
                 "Apple_Terminal" => return Self::AppleTerminal,
                 "iTerm.app" => return Self::ITerm2,
@@ -30,14 +48,17 @@ impl TerminalType {
         
         // Check for Kitty
         if std::env::var("KITTY_WINDOW_ID").is_ok() {
+            write_debug_log("Detected: Kitty (KITTY_WINDOW_ID)");
             return Self::Kitty;
         }
         
         // Check for Ghostty
         if std::env::var("GHOSTTY_RESOURCES_DIR").is_ok() {
+            write_debug_log("Detected: Ghostty (GHOSTTY_RESOURCES_DIR)");
             return Self::Ghostty;
         }
         
+        write_debug_log("Detected: Unknown terminal");
         Self::Unknown
     }
 }
@@ -72,6 +93,8 @@ impl TerminalSettingsGuard {
     fn new(new_family: &str, new_size: f32) -> Result<Self> {
         let terminal_type = TerminalType::detect();
         println!("ℹ️  Detected terminal: {:?}", terminal_type);
+        write_debug_log(&format!("Terminal type: {:?}", terminal_type));
+        write_debug_log(&format!("Requested font: {} @ {}pt", new_family, new_size));
         
         match terminal_type {
             TerminalType::AppleTerminal => Self::setup_apple_terminal(new_family, new_size, terminal_type),
@@ -80,6 +103,7 @@ impl TerminalSettingsGuard {
             TerminalType::Ghostty => Self::setup_ghostty(new_size, terminal_type),
             TerminalType::Unknown => {
                 println!("⚠️  Unknown terminal type. Font settings may not apply.");
+                write_debug_log("WARNING: Unknown terminal type");
                 Ok(Self {
                     terminal_type,
                     original_font_size: None,
@@ -173,12 +197,44 @@ impl TerminalSettingsGuard {
     }
     
     fn setup_ghostty(new_size: f32, terminal_type: TerminalType) -> Result<Self> {
-        // Ghostty는 escape sequence로 폰트 크기 변경
-        // OSC 50 sequence: ESC ] 50 ; font-size=SIZE ST
-        print!("\x1b]50;font-size={}\x07", new_size);
-        std::io::Write::flush(&mut std::io::stdout())?;
+        write_debug_log("Attempting Ghostty font size change");
         
-        println!("ℹ️  Ghostty font size set to {}", new_size);
+        // Ghostty 설정 파일 경로
+        let mut config_path = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+        config_path.push(".config");
+        config_path.push("ghostty");
+        config_path.push("config");
+        
+        write_debug_log(&format!("Ghostty config path: {}", config_path.display()));
+        
+        // Try multiple approaches
+        
+        // Approach 1: OSC escape sequences (multiple variants)
+        print!("\x1b]50;font-size={}\x07", new_size);
+        print!("\x1b]50;SetFontSize={}\x07", new_size);
+        print!("\x1b]1337;SetFontSize={}\x07", new_size);
+        std::io::Write::flush(&mut std::io::stdout())?;
+        write_debug_log(&format!("Sent OSC sequences for font-size={}", new_size));
+        
+        // Approach 2: Try ghostty CLI if available
+        let cli_result = std::process::Command::new("ghostty")
+            .arg("+set")
+            .arg(format!("font-size={}", new_size))
+            .output();
+        
+        if let Ok(output) = cli_result {
+            if output.status.success() {
+                write_debug_log("SUCCESS: ghostty CLI command succeeded");
+            } else {
+                write_debug_log(&format!("FAILED: ghostty CLI stderr: {}", 
+                    String::from_utf8_lossy(&output.stderr)));
+            }
+        } else {
+            write_debug_log("FAILED: ghostty CLI not available");
+        }
+        
+        println!("ℹ️  Ghostty font size change attempted (please manually set font-size=2.5 in config if needed)");
+        write_debug_log("Ghostty setup completed (may require manual config)");
 
         Ok(Self {
             terminal_type,
@@ -328,18 +384,59 @@ pub fn run_interactive_mode() -> Result<()> {
 
     // 5. Resolution / Fullscreen
     
+    // Get initial terminal size (before font change)
+    let (initial_cols, initial_rows) = crossterm::terminal::size()?;
+    println!("ℹ️  Initial terminal size: {}x{}", initial_cols, initial_rows);
+    #[cfg(target_os = "macos")]
+    write_debug_log(&format!("Initial terminal size: {}x{}", initial_cols, initial_rows));
+    
     // [NEW] 터미널 설정을 변경하고, 복구 가드를 생성합니다.
     #[cfg(target_os = "macos")]
     let _settings_guard = TerminalSettingsGuard::new("D2Coding", 2.5)
         .context("Failed to set terminal settings")?;
     // (이 변수가 생성되는 시점에 폰트가 바뀌고, 함수가 끝나면 자동으로 복구됩니다)
 
-    // Wait for resize to propagate
+    // Wait for terminal to resize (poll until size changes or timeout)
     #[cfg(target_os = "macos")]
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    {
+        println!("ℹ️  Waiting for terminal to resize...");
+        write_debug_log("Polling for terminal resize...");
+        let mut attempts = 0;
+        let max_attempts = 20; // 2 seconds total (20 * 100ms)
+        let mut new_size = (initial_cols, initial_rows);
+        
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            new_size = crossterm::terminal::size()?;
+            
+            write_debug_log(&format!("Attempt {}: size = {}x{}", attempts + 1, new_size.0, new_size.1));
+            
+            // Check if size has changed significantly (at least 10% increase expected)
+            if new_size.0 > initial_cols || new_size.1 > initial_rows {
+                let msg = format!("Terminal resized: {}x{} -> {}x{}", 
+                    initial_cols, initial_rows, new_size.0, new_size.1);
+                println!("✅ {}", msg);
+                write_debug_log(&format!("SUCCESS: {}", msg));
+                break;
+            }
+            
+            attempts += 1;
+            if attempts >= max_attempts {
+                let msg = format!("Terminal size didn't change after {} attempts. Using current size: {}x{}", 
+                    max_attempts, new_size.0, new_size.1);
+                println!("⚠️  {}", msg);
+                write_debug_log(&format!("WARNING: {}", msg));
+                write_debug_log("SUGGESTION: Ghostty may not support dynamic font resizing. Please manually set font-size=2.5 in ~/.config/ghostty/config");
+                break;
+            }
+        }
+    }
     
     // Get current terminal size (after resize)
     let (term_cols, term_rows) = crossterm::terminal::size()?;
+    println!("ℹ️  Final terminal size for rendering: {}x{}", term_cols, term_rows);
+    #[cfg(target_os = "macos")]
+    write_debug_log(&format!("Final terminal size: {}x{}", term_cols, term_rows));
     
     // We treat the terminal as a grid of "Image Pixels".
     // 1 Char Width = 1 Image Pixel Width

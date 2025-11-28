@@ -13,7 +13,6 @@ pub struct VideoDecoder {
     width: u32,
     height: u32,
     fps: f64,
-    needs_crop: bool,
     fill_mode: bool,
 }
 
@@ -32,12 +31,6 @@ impl VideoDecoder {
         writeln!(log_file, "=== OpenCV Video Decoder Initialization ===")?;
         writeln!(log_file, "Video: {}", path)?;
         writeln!(log_file, "Target Resolution: {}x{}", width, height)?;
-        
-        // Check if this is a 3D SBS video (bochi.mp4)
-        let needs_crop = path.to_lowercase().contains("bochi");
-        if needs_crop {
-            writeln!(log_file, "DEBUG: Detected 3D SBS video - crop enabled (left half)")?;
-        }
         
         writeln!(log_file, "DEBUG: Opening video with OpenCV...")?;
         
@@ -74,7 +67,6 @@ impl VideoDecoder {
             width,
             height,
             fps,
-            needs_crop,
             fill_mode,
         })
     }
@@ -103,33 +95,15 @@ impl VideoDecoder {
         let size = core::Size::new(self.width as i32, self.height as i32);
         let start_resize = std::time::Instant::now();
 
-        // Apply crop for 3D SBS videos (take left half)
-        if self.needs_crop {
-            let width = frame.cols();
-            let height = frame.rows();
-            let roi = core::Rect::new(0, 0, width / 2, height);
-            let cropped = Mat::roi(&frame, roi)?;
-            // Resize directly from the ROI (no clone needed)
-            // First, compute scale to fit within target size while preserving aspect (letterbox)
-            let orig_w = cropped.cols();
-            let orig_h = cropped.rows();
-            let scale_w = self.width as f64 / orig_w as f64;
-            let scale_h = self.height as f64 / orig_h as f64;
-            let scale = if self.fill_mode { scale_w.max(scale_h) } else { scale_w.min(scale_h) };
-            let new_w = ((orig_w as f64 * scale).round() as i32).max(1);
-            let new_h = ((orig_h as f64 * scale).round() as i32).max(1);
-            imgproc::resize(&cropped, &mut resized, core::Size::new(new_w, new_h), 0.0, 0.0, imgproc::INTER_LINEAR)?;
-        } else {
-            // Resize directly from original frame but maintain aspect ratio and letterbox if necessary
-            let orig_w = frame.cols();
-            let orig_h = frame.rows();
-            let scale_w = self.width as f64 / orig_w as f64;
-            let scale_h = self.height as f64 / orig_h as f64;
-            let scale = if self.fill_mode { scale_w.max(scale_h) } else { scale_w.min(scale_h) };
-            let new_w = ((orig_w as f64 * scale).round() as i32).max(1);
-            let new_h = ((orig_h as f64 * scale).round() as i32).max(1);
-            imgproc::resize(&frame, &mut resized, core::Size::new(new_w, new_h), 0.0, 0.0, imgproc::INTER_LINEAR)?;
-        }
+        // Resize directly from original frame but maintain aspect ratio and letterbox if necessary
+        let orig_w = frame.cols();
+        let orig_h = frame.rows();
+        let scale_w = self.width as f64 / orig_w as f64;
+        let scale_h = self.height as f64 / orig_h as f64;
+        let scale = if self.fill_mode { scale_w.max(scale_h) } else { scale_w.min(scale_h) };
+        let new_w = ((orig_w as f64 * scale).round() as i32).max(1);
+        let new_h = ((orig_h as f64 * scale).round() as i32).max(1);
+        imgproc::resize(&frame, &mut resized, core::Size::new(new_w, new_h), 0.0, 0.0, imgproc::INTER_LINEAR)?;
         let resize_time = start_resize.elapsed();
 
         // Create final canvas with letterbox (black background) at target size and center the resized frame

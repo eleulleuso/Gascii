@@ -1,6 +1,6 @@
 #!/bin/bash
 # -----------------------------------------------------------------------------
-# Bad Apple!! Player (Rust Edition) - Interactive Launcher
+# Gascii Player (Rust Edition) - Interactive Launcher
 # -----------------------------------------------------------------------------
 
 set -e
@@ -14,18 +14,23 @@ if ! command -v cargo &> /dev/null; then
     exit 1
 fi
 
-# macOS Font Resizing (AppleScript)
-if [[ "$(uname)" == "Darwin" ]]; then
-    osascript -e '
-    tell application "Terminal"
-        set font size of window 1 to 2.5
-    end tell
-    ' 2>/dev/null || true
-fi
+
+# [NEW] Resize Font to 2.5 (macOS only) for high resolution
+#[cfg(target_os = "macos")]
+{
+    println!("ℹ️  Optimizing terminal resolution (Font Size -> 2.5)... ");
+    let _ = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg("tell application \"Terminal\" to set font size of window 1 to 2.5")
+        .output();
+    
+    # Wait for resize to propagate
+    std::thread::sleep(std::time::Duration::from_millis(500));
+}
 
 # Build and Run in one go
 # We use --release for performance
 # We pass 'interactive' to trigger the new menu mode
-echo "🚀 Launching Bad Apple Player..."
+echo "🚀 Launching Gascii Player..."
 cd "$PROJECT_DIR"
 cargo run --quiet --release -- interactive

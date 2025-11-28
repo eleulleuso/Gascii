@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use crate::core::display_manager::DisplayMode;
 use crate::core::player;
+use opencv::prelude::*;
 
 pub fn run_interactive_mode() -> Result<()> {
     // 1. Video Selection
@@ -91,7 +92,21 @@ pub fn run_interactive_mode() -> Result<()> {
     let fill = aspect_selection == 1;
 
     // 5. Resolution / Fullscreen
-    // Get current terminal size
+    
+    // [NEW] Resize Font to 2.5 (macOS only) for high resolution
+    #[cfg(target_os = "macos")]
+    {
+        println!("ℹ️  Optimizing terminal resolution (Font Size -> 2.5)...");
+        let _ = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg("tell application \"Terminal\" to set font size of window 1 to 2.5")
+            .output();
+        
+        // Wait for resize to propagate
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    // Get current terminal size (after resize)
     let (term_cols, term_rows) = crossterm::terminal::size()?;
     
     // We treat the terminal as a grid of "Image Pixels".
@@ -104,21 +119,30 @@ pub fn run_interactive_mode() -> Result<()> {
 
     let (mut target_w, mut target_h) = (max_w, max_h);
 
-    if aspect_selection == 0 { // Fit (16:9)
-        // Calculate 16:9 box within the available grid
-        let target_ratio = 16.0 / 9.0;
+    if aspect_selection == 0 { // Fit (Original Ratio)
+        // Probe video for aspect ratio
+        let mut video_w = 1920.0;
+        let mut video_h = 1080.0;
+        
+        // Use OpenCV to get video dimensions
+        if let Ok(mut capture) = opencv::videoio::VideoCapture::from_file(selected_video.to_str().unwrap(), opencv::videoio::CAP_ANY) {
+             if let Ok(w) = capture.get(opencv::videoio::CAP_PROP_FRAME_WIDTH) {
+                 if w > 0.0 { video_w = w; }
+             }
+             if let Ok(h) = capture.get(opencv::videoio::CAP_PROP_FRAME_HEIGHT) {
+                 if h > 0.0 { video_h = h; }
+             }
+        }
+
+        let target_ratio = video_w / video_h;
         let current_ratio = max_w as f64 / max_h as f64;
         
         if current_ratio > target_ratio {
-            // Terminal is wider than 16:9 -> Limit by height
-            // Height = Max Height
-            // Width = Height * 16/9
+            // Terminal is wider than video -> Limit by height
             target_h = max_h;
             target_w = (max_h as f64 * target_ratio) as u32;
         } else {
-            // Terminal is taller/narrower than 16:9 -> Limit by width
-            // Width = Max Width
-            // Height = Width * 9/16
+            // Terminal is taller/narrower than video -> Limit by width
             target_w = max_w;
             target_h = (max_w as f64 / target_ratio) as u32;
         }

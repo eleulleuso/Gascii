@@ -15,18 +15,6 @@ if ! command -v cargo &> /dev/null; then
 fi
 
 
-# [NEW] Resize Font to 2.5 (macOS only) for high resolution
-#[cfg(target_os = "macos")]
-{
-    println!("ℹ️  Optimizing terminal resolution (Font Size -> 2.5)... ");
-    let _ = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg("tell application \"Terminal\" to set font size of window 1 to 2.5")
-        .output();
-    
-    # Wait for resize to propagate
-    std::thread::sleep(std::time::Duration::from_millis(500));
-}
 
 # Build and Run in one go
 # We use --release for performance

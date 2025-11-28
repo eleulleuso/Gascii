@@ -26,7 +26,7 @@ impl AudioManager {
         let file = File::open(path).with_context(|| format!("Failed to open audio file: {}", path))?;
         let source = Decoder::new(BufReader::new(file)).context("Failed to decode audio")?;
         
-        let sink = self.sink.lock().unwrap();
+        let sink = self.sink.lock().map_err(|_| anyhow::anyhow!("Audio sink mutex poisoned"))?;
         if !sink.empty() {
             sink.stop();
         }

@@ -26,6 +26,9 @@ impl FrameProcessor {
     // 
     // OPTIMIZATION: Process rows in chunks for better cache locality
     pub fn process_frame(&self, frame_data: &[u8]) -> Vec<CellData> {
+        // Validate input size in debug builds to avoid unsafe out-of-bounds access.
+        let expected_len = self.width * self.height * 3;
+        debug_assert!(frame_data.len() >= expected_len, "Frame size is too small: got {} expected {}", frame_data.len(), expected_len);
         let term_width = self.width;           // Canvas width IS terminal width
         let term_height = self.height / 2;     // Canvas height is 2x terminal height
         
@@ -48,6 +51,7 @@ impl FrameProcessor {
                         // SAFETY: Bounds checking moved outside hot loop
                         // We know frame_data.len() == width * height * 3
                         if p_idx + 2 < frame_data.len() {
+                            // SAFETY: bounds checked above with p_idx + 2 < len
                             unsafe {
                                 (
                                     *frame_data.get_unchecked(p_idx),

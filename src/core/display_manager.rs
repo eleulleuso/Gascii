@@ -65,13 +65,13 @@ impl DisplayManager {
         self.stdout.queue(Print("\x1b[?2026h"))?;
 
         let mut force_redraw = false;
-        if self.last_cells.is_none() || self.last_cells.as_ref().unwrap().len() != cells.len() {
+        if self.last_cells.as_ref().map(|v| v.len()).unwrap_or(0) != cells.len() {
             self.stdout.queue(crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
             self.last_cells = Some(vec![crate::core::processor::CellData { char: ' ', fg: (0,0,0), bg: (0,0,0) }; cells.len()]);
             force_redraw = true;
         }
 
-        let last_cells = self.last_cells.as_mut().unwrap();
+        let last_cells = self.last_cells.as_mut().expect("last_cells should be set by now");
         
         // Reuse buffer
         self.render_buffer.clear();

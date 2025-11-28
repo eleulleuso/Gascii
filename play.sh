@@ -96,21 +96,70 @@ CHAR_HEIGHT=${CHAR_HEIGHT:-20}
 # Calculate screen aspect ratio (this is what we'll use for frames)
 SCREEN_ASPECT=$(awk "BEGIN {printf \"%.3f\", $SCREEN_WIDTH / $SCREEN_HEIGHT}")
 
-# 3. Cyber Banner
-echo -e "${CYAN}${BOLD}"
-echo " ╔══════════════════════════════════════════════════════════════╗"
-echo " ║  ____            _        _                _      _          ║"
-echo " ║ |  _ \          | |      / \   _ __  _ __ | | ___| |         ║"
-echo " ║ | |_) | __ _  __| |     / _ \ | '_ \| '_ \| |/ _ \ |         ║"
-echo " ║ |  _ < / _\` |/ _\` |    / ___ \| |_) | |_) | |  __/_|       ║"
-echo " ║ |_| \_\__,_|\__,_|   /_/   \_\ .__/| .__/|_|\___(_)          ║"
-echo " ║                              |_|   |_|                       ║"
-echo " ╚══════════════════════════════════════════════════════════════╝"
-echo -e "${RESET}"
-echo -e "${PURPLE}   OpenCV ENGINE v2.0${RESET} ${BLUE}|${RESET} ${WHITE}GPU ACCELERATED${RESET} ${BLUE}|${RESET} ${CYAN}NATIVE FPS${RESET}"
-echo -e "${GREEN}   터미널: ${TERM_WIDTH}x${TERM_HEIGHT}${RESET}"
-echo -e "${GREEN}   스크린: ${SCREEN_WIDTH}x${SCREEN_HEIGHT} (${SCREEN_ASPECT})${RESET}"
-echo -e "${BLUE} ──────────────────────────────────────────────────────────────${RESET}"
+# Function to print centered text
+print_centered() {
+    local text="$1"
+    local color="${2:-$RESET}"
+    local width=${TERM_WIDTH:-$(tput cols)}
+    
+    # Strip ANSI codes for length calculation
+    local clean_text=$(echo -e "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    local text_len=${#clean_text}
+    
+    if [[ $text_len -ge $width ]]; then
+        echo -e "${color}${text}${RESET}"
+    else
+        local padding=$(( (width - text_len) / 2 ))
+        printf "%${padding}s" ""
+        echo -e "${color}${text}${RESET}"
+    fi
+}
+
+# 3. Cyber Banner (Dynamic Centering)
+echo ""
+
+# Function to print BIG text (Simple ASCII Art Mapper)
+print_big_text() {
+    local text="$1"
+    local color="${2:-$CYAN}"
+    
+    # Only use big text if terminal is wide enough
+    if [[ "$TERM_WIDTH" -lt 100 ]]; then
+        print_centered "$text" "$color"
+        return
+    fi
+
+    # Simple mapping for limited characters (A-Z, 0-9, space)
+    # This is a simplified implementation. For full support, we'd need a huge map.
+    # We will use `figlet` if available, otherwise fallback to a simple block banner.
+    
+    if command -v figlet &> /dev/null; then
+        echo -e "$color"
+        figlet -c -f slant "$text"
+        echo -e "$RESET"
+    else
+        # Fallback: Print with spacing and border to make it "look" bigger
+        echo ""
+        print_centered "╔══════════════════════════════════════════════════════════════╗" "$color"
+        print_centered "║ $(printf "%-60s" "   $text") ║" "$color"
+        print_centered "╚══════════════════════════════════════════════════════════════╝" "$color"
+        echo ""
+    fi
+}
+
+# 3. Cyber Banner (Dynamic)
+echo ""
+print_big_text "BAD APPLE" "$CYAN"
+print_centered "OpenCV ENGINE v2.0 | GPU ACCELERATED | NATIVE FPS" "$PURPLE"
+
+# Dynamic Status Info
+if [[ "$TERM_WIDTH" -gt 120 ]]; then
+    echo -e "${GREEN}$(printf "%*s" $((TERM_WIDTH/2 - 10)) "")TERMINAL: ${TERM_WIDTH}x${TERM_HEIGHT}${RESET}"
+    echo -e "${GREEN}$(printf "%*s" $((TERM_WIDTH/2 - 10)) "")SCREEN:   ${SCREEN_WIDTH}x${SCREEN_HEIGHT}${RESET}"
+else
+    print_centered "Term: ${TERM_WIDTH}x${TERM_HEIGHT} | Screen: ${SCREEN_WIDTH}x${SCREEN_HEIGHT}" "$GREEN"
+fi
+print_centered "──────────────────────────────────────────────────────────────" "$BLUE"
 echo ""
 
 # 4. Video Selection
@@ -225,28 +274,31 @@ else
 fi
 
 # ============================================================
-# 7.5 Resolution Scale Selection
+# 7.5 Resolution Scale & Aspect Ratio Selection
 # ============================================================
 echo ""
-echo -e "${WHITE}${BOLD}RESOLUTION SCALE${RESET}"
-echo -e "  ${CYAN}[1]${RESET} ${GREEN}100%${RESET} (Native - Best Quality)"
-echo -e "  ${CYAN}[2]${RESET} ${YELLOW}75%${RESET}  (Balanced)"
-echo -e "  ${CYAN}[3]${RESET} ${MAGENTA}50%${RESET}  (Performance/Retro)"
-echo -e "  ${CYAN}[4]${RESET} ${BLUE}Manual${RESET} (Enter Width)"
-echo -e "${BLUE} ──────────────────────────────────────────────────────────────${RESET}"
+echo -e "${WHITE}${BOLD}DISPLAY SETTINGS${RESET}"
+echo -e "${BLUE}Aspect Ratio Mode:${RESET}"
+echo -e "  ${CYAN}[1]${RESET} ${GREEN}Fit (Letterbox)${RESET} - Show entire video (Black bars)"
+echo -e "  ${CYAN}[2]${RESET} ${YELLOW}Fill (Crop)${RESET}     - Fill terminal (Crop edges)"
+echo -e "  ${CYAN}[3]${RESET} ${MAGENTA}Stretch${RESET}         - Distort to fill terminal"
+read -p "$(echo -e ${WHITE}"Select Mode [1]: "${RESET})" ASPECT_CHOICE
+ASPECT_CHOICE=${ASPECT_CHOICE:-1}
+
+echo -e "\n${BLUE}Resolution Scale:${RESET}"
+echo -e "  ${CYAN}[1]${RESET} ${GREEN}100%${RESET} (Native)"
+echo -e "  ${CYAN}[2]${RESET} ${YELLOW}75%${RESET}"
+echo -e "  ${CYAN}[3]${RESET} ${MAGENTA}50%${RESET}"
+echo -e "  ${CYAN}[4]${RESET} ${BLUE}Manual${RESET}"
 read -p "$(echo -e ${WHITE}"Select Scale [1]: "${RESET})" SCALE_CHOICE
 SCALE_CHOICE=${SCALE_CHOICE:-1}
 
 SCALE_FACTOR=1.0
 MANUAL_WIDTH=0
 
-if [[ "$SCALE_CHOICE" == "2" ]]; then
-    SCALE_FACTOR=0.75
-elif [[ "$SCALE_CHOICE" == "3" ]]; then
-    SCALE_FACTOR=0.5
-elif [[ "$SCALE_CHOICE" == "4" ]]; then
-    read -p "Enter Target Width (e.g., 200): " MANUAL_WIDTH
-fi
+if [[ "$SCALE_CHOICE" == "2" ]]; then SCALE_FACTOR=0.75; fi
+if [[ "$SCALE_CHOICE" == "3" ]]; then SCALE_FACTOR=0.5; fi
+if [[ "$SCALE_CHOICE" == "4" ]]; then read -p "Enter Target Width: " MANUAL_WIDTH; fi
 
 # ============================================================
 # 8. Calculate Dimensions
@@ -254,47 +306,69 @@ fi
 # Debug detected size
 echo -e "${YELLOW}DEBUG: Detected Terminal Size: ${TERM_WIDTH}x${TERM_HEIGHT}${RESET}"
 
-# Minimal safety margin to prevent edge artifacts
 MARGIN_X=0
 MARGIN_Y=0
-
-# Ensure margins don't exceed terminal size
-if [[ $MARGIN_X -ge $TERM_WIDTH ]]; then MARGIN_X=0; fi
-if [[ $MARGIN_Y -ge $TERM_HEIGHT ]]; then MARGIN_Y=0; fi
-
-# RGB uses half-blocks (▄), so each terminal ROW displays 2 pixels vertically
 MAX_CHARS_X=$((TERM_WIDTH - MARGIN_X))
 MAX_CHARS_Y=$((TERM_HEIGHT - MARGIN_Y))
 
 if [[ "$MANUAL_WIDTH" -gt 0 ]]; then
     WIDTH=$MANUAL_WIDTH
-    # Calculate height based on aspect ratio (approx 16:9) or just use terminal height ratio
-    # Let's just use the terminal's aspect ratio to fill height proportionally
-    # Or better, just use the terminal height scaled by the width ratio?
-    # Actually, if user sets width, we should probably auto-calc height to keep aspect ratio?
-    # But for "Stretch", we want to fill.
-    # Let's assume if they set Manual Width, they want to fit that width.
-    # We'll set height to fit the terminal aspect or just use available height.
-    
-    # Simple approach: If manual width is set, use it. Calculate height to maintain 16:9 roughly?
-    # No, user wants to control size.
-    # Let's just set WIDTH to manual, and HEIGHT to proportional terminal height?
-    # Let's default HEIGHT to MAX_CHARS_Y (full height) but scaled if WIDTH is scaled.
-    
-    # Actually, let's just ask for Height too if Manual.
-    read -p "Enter Target Height (e.g., 50): " MANUAL_HEIGHT
-    HEIGHT=$MANUAL_HEIGHT
+    HEIGHT=${MANUAL_HEIGHT:-$((WIDTH * 9 / 16 / 2))}
 else
-    # Target: FILL TERMINAL (Stretch)
-    # We use the full available terminal space.
-    WIDTH=$(awk -v w=$MAX_CHARS_X -v s=$SCALE_FACTOR "BEGIN {printf \"%.0f\", w * s}")
-    HEIGHT=$(awk -v h=$MAX_CHARS_Y -v s=$SCALE_FACTOR "BEGIN {printf \"%.0f\", h * s}")
-
-    if [[ "$MODE" == "rgb" ]]; then
-        # In RGB mode, we use half-blocks, so vertical resolution is doubled
-        HEIGHT=$(awk -v h=$MAX_CHARS_Y -v s=$SCALE_FACTOR "BEGIN {printf \"%.0f\", (h * 2) * s}")
+    # Effective Canvas Size
+    CANVAS_W=$MAX_CHARS_X
+    CANVAS_H=$MAX_CHARS_Y
+    if [[ "$MODE" == "rgb" ]]; then CANVAS_H=$((MAX_CHARS_Y * 2)); fi
+    
+    # Target Aspect Ratio (16:9 = 1.777)
+    TARGET_RATIO=1.777
+    
+    # Calculate Canvas Ratio using awk (safer than bc)
+    CANVAS_RATIO=$(awk -v w=$CANVAS_W -v h=$CANVAS_H "BEGIN {printf \"%.3f\", w / h}")
+    
+    # Compare ratios
+    IS_WIDE=$(awk -v c=$CANVAS_RATIO -v t=$TARGET_RATIO "BEGIN {print (c > t) ? 1 : 0}")
+    
+    if [[ "$ASPECT_CHOICE" == "1" ]]; then
+        # [1] FIT (Letterbox)
+        if [[ "$IS_WIDE" == "1" ]]; then
+            # Canvas is wider -> Fit to Height
+            HEIGHT=$CANVAS_H
+            WIDTH=$(awk -v h=$HEIGHT -v r=$TARGET_RATIO "BEGIN {printf \"%.0f\", h * r}")
+        else
+            # Canvas is taller -> Fit to Width
+            WIDTH=$CANVAS_W
+            HEIGHT=$(awk -v w=$WIDTH -v r=$TARGET_RATIO "BEGIN {printf \"%.0f\", w / r}")
+        fi
+    elif [[ "$ASPECT_CHOICE" == "2" ]]; then
+        # [2] FILL (Crop)
+        if [[ "$IS_WIDE" == "1" ]]; then
+            # Canvas is wider -> Fit to Width (Crop Top/Bottom)
+            WIDTH=$CANVAS_W
+            HEIGHT=$(awk -v w=$WIDTH -v r=$TARGET_RATIO "BEGIN {printf \"%.0f\", w / r}")
+        else
+            # Canvas is taller -> Fit to Height (Crop Sides)
+            HEIGHT=$CANVAS_H
+            WIDTH=$(awk -v h=$HEIGHT -v r=$TARGET_RATIO "BEGIN {printf \"%.0f\", h * r}")
+        fi
+    else
+        # [3] STRETCH
+        WIDTH=$CANVAS_W
+        HEIGHT=$CANVAS_H
     fi
+    
+    # Apply Resolution Scale
+    WIDTH=$(awk -v w=$WIDTH -v s=$SCALE_FACTOR "BEGIN {printf \"%.0f\", w * s}")
+    HEIGHT=$(awk -v h=$HEIGHT -v s=$SCALE_FACTOR "BEGIN {printf \"%.0f\", h * s}")
 fi
+
+# Ensure even dimensions
+WIDTH=$((WIDTH / 2 * 2))
+HEIGHT=$((HEIGHT / 2 * 2))
+
+# DEBUG: Print calculated dimensions
+echo -e "${YELLOW}DEBUG: Canvas Calculated: ${WIDTH}x${HEIGHT}${RESET}"
+echo -e "${GREEN}🎯 Final Resolution: ${WIDTH}x${HEIGHT}${RESET}"
 
 # Ensure even dimensions for block characters
 WIDTH=$((WIDTH / 2 * 2))
@@ -329,8 +403,6 @@ echo "Binary Hash: $(shasum "$RUST_BIN" | awk '{print $1}')"
 # Construct the command array
 PLAY_LIVE_CMD=("$RUST_BIN" "play-live" \
     "--video" "$VIDEO_PATH" \
-    "--width" "$WIDTH" \
-    "--height" "$HEIGHT" \
     "--width" "$WIDTH" \
     "--height" "$HEIGHT" \
     "--mode" "$MODE")

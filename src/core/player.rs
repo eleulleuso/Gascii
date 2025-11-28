@@ -48,14 +48,20 @@ pub fn play_realtime(
         while r_clone.load(Ordering::SeqCst) {
             match decoder.read_frame() {
                 Ok(Some(buffer)) => {
-                    // BLOCKING push: Wait until buffer has space
-                    while queue.push(buffer.clone()).is_err() {
-                        // Buffer full - wait for consumer to catch up
-                        thread::sleep(Duration::from_micros(100));
-                        
-                        // Check if we should exit
-                        if !r_clone.load(Ordering::SeqCst) {
-                            return;
+                    // BLOCKING push: Wait until buffer has space without cloning frames.
+                    let mut buf = buffer;
+                    loop {
+                        match queue.push(buf) {
+                            Ok(()) => break,
+                            Err(returned_buf) => {
+                                // Buffer full - wait for consumer to catch up
+                                buf = returned_buf;
+                                thread::sleep(Duration::from_micros(100));
+                                // Check if we should exit
+                                if !r_clone.load(Ordering::SeqCst) {
+                                    return;
+                                }
+                            }
                         }
                     }
                     frames_read += 1;

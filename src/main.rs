@@ -2,7 +2,7 @@ mod core;
 mod utils;
 
 use clap::{Parser, Subcommand};
-use anyhow::Result;
+use anyhow::{Result, Context};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -117,7 +117,7 @@ fn play_animation(frames_dir: &str, audio_path: Option<&str>, fps: u32, mode: Di
 
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    }).context("Error registering Ctrl-C handler")?;
 
     for i in 0..frames.frame_count() {
         if !running.load(Ordering::SeqCst) {
@@ -136,7 +136,7 @@ fn play_animation(frames_dir: &str, audio_path: Option<&str>, fps: u32, mode: Di
 
         // Render
         if let Some(frame_data) = frames.get_frame(i) {
-            display.render_frame(frame_data)?;
+            display.render_frame(frame_data.as_slice())?;
         }
 
         // Input

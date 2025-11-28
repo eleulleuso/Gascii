@@ -1,8 +1,9 @@
 use anyhow::Result;
 use crate::utils::file_utils;
+use std::sync::Arc;
 
 pub struct FrameManager {
-    frames: Vec<Vec<u8>>,
+    frames: Vec<Arc<Vec<u8>>>,
 }
 
 impl FrameManager {
@@ -40,6 +41,10 @@ impl FrameManager {
         let total_packed_size = packed_frame_size * frame_count;
         
         let decompressed_packed = lz4::block::decompress(compressed_body, Some(total_packed_size as i32))?;
+
+        if decompressed_packed.len() < total_packed_size {
+            anyhow::bail!("Decompressed data length {} shorter than expected {}", decompressed_packed.len(), total_packed_size);
+        }
         
         println!("Unpacking frames...");
         self.frames.reserve(frame_count);
@@ -80,15 +85,15 @@ impl FrameManager {
                 bit_idx += 1;
             }
             
-            self.frames.push(frame_data);
+            self.frames.push(Arc::new(frame_data));
         }
 
         println!("Loaded {} frames.", self.frames.len());
         Ok(self.frames.len())
     }
 
-    pub fn get_frame(&self, index: usize) -> Option<&[u8]> {
-        self.frames.get(index).map(|v| v.as_slice())
+    pub fn get_frame(&self, index: usize) -> Option<Arc<Vec<u8>>> {
+        self.frames.get(index).map(|v| Arc::clone(v))
     }
 
     pub fn frame_count(&self) -> usize {

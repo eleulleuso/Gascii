@@ -33,38 +33,79 @@ impl VideoDecoder {
         
         let mut command = FfmpegCommand::new();
         
-        // 1. Hardware Acceleration (macOS M-series Optimization)
-        // CRITICAL: Use -hwaccel videotoolbox WITHOUT -hwaccel_output_format
-        // videotoolbox_vld is GPU-only format incompatible with scale filter
-        // FFmpeg will automatically handle format conversion for filters
-        if std::env::consts::OS == "macos" {
-            println!("DEBUG: Enabling macOS Hardware Acceleration (videotoolbox)");
-            command.args(&["-hwaccel", "videotoolbox"]);
+        // 1. Hardware Acceleration & Filter Chain Strategy
+        // We detect the OS and apply the best available hardware acceleration.
+        // NOTE: We use explicit device initialization (-init_hw_device) instead of -hwaccel
+        // to avoid argument conflicts and ensure hwupload has a valid device reference.
+        
+        let os = std::env::consts::OS;
+        let mut filter = String::new();
+        
+        // Hack for specific 3D video (bochi.mp4) requested by user
+        let crop_filter = if video_path.to_lowercase().contains("bochi") {
+            "crop=iw/2:ih:0:0,"
+        } else {
+            ""
+        };
+
+        if os == "macos" {
+            println!("DEBUG: Enabling macOS Hardware Acceleration (videotoolbox via filter)");
+            // macOS: VideoToolbox
+            // 1. Init device named 'vt'
+            // 2. Bind 'vt' to filter graph
+            command.args(&["-init_hw_device", "videotoolbox=vt"]);
+            command.args(&["-filter_hw_device", "vt"]);
+            
+            filter = format!(
+                "{}hwupload,scale_vt=w={}:h={},hwdownload,format=pix_fmts=rgb24",
+                crop_filter, width, height
+            );
+        } else if os == "windows" {
+            println!("DEBUG: Enabling Windows Hardware Acceleration (d3d11va via filter)");
+            // Windows: D3D11VA
+            command.args(&["-init_hw_device", "d3d11va=d3d11"]);
+            command.args(&["-filter_hw_device", "d3d11"]);
+            
+            filter = format!(
+                "{}hwupload,scale_d3d11=w={}:h={},hwdownload,format=pix_fmts=rgb24",
+                crop_filter, width, height
+            );
+        } else if os == "linux" {
+            println!("DEBUG: Enabling Linux Hardware Acceleration (vaapi via filter)");
+            // Linux: VAAPI
+            command.args(&["-init_hw_device", "vaapi=va:/dev/dri/renderD128"]);
+            command.args(&["-filter_hw_device", "va"]);
+            
+            filter = format!(
+                "{}hwupload,scale_vaapi=w={}:h={},hwdownload,format=pix_fmts=rgb24",
+                crop_filter, width, height
+            );
+        } else {
+            println!("DEBUG: Using CPU Decoding (Fallback)");
+            // Fallback: CPU Lanczos
+            filter = format!(
+                "scale={}:{}:flags=lanczos:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,format=pix_fmts=rgb24",
+                width, height, width, height
+            );
         }
 
-        // Input file
+        // 2. Apply Input and Arguments
+        // CRITICAL: Must specify input BEFORE output options
         command.input(video_path);
-
-        // 2. Filter Chain (Optimized Quality)
-        // Lanczos scaling only - unsharp removed (amplifies noise on live-action video)
-        let filter = format!(
-            "scale={}:{}:flags=lanczos:force_original_aspect_ratio=decrease,pad={}:{}:(ow-iw)/2:(oh-ih)/2,format=rgb24",
-            width, height, width, height
-        );
         
-        writeln!(log_file, "\n=== FFmpeg Filter Chain ===")?;
-        writeln!(log_file, "{}", filter)?;
-        
-        // Log full command for debugging
-        writeln!(log_file, "\n=== Full FFmpeg Command ===")?;
-        writeln!(log_file, "ffmpeg -hwaccel videotoolbox -i {} -vf \"{}\" -f rawvideo -pix_fmt rgb24 pipe:", 
-                 video_path, filter)?;
-        writeln!(log_file, "=========================\n")?;
-        log_file.flush()?;
-
         command.args(&["-vf", &filter]);
         command.args(&["-f", "rawvideo"]);
         command.args(&["-pix_fmt", "rgb24"]);
+        
+        // 3. Logging
+        writeln!(log_file, "\n=== FFmpeg Filter Chain ===")?;
+        writeln!(log_file, "{}", filter)?;
+        
+        writeln!(log_file, "\n=== Full FFmpeg Command ===")?;
+        writeln!(log_file, "ffmpeg -i {} -vf \"{}\" -f rawvideo -pix_fmt rgb24 pipe:", 
+                 video_path, filter)?;
+        writeln!(log_file, "=========================\n")?;
+        log_file.flush()?;
         command.output("pipe:");
         command.args(&["-loglevel", "info"]); // Changed to 'info' to capture more details
         

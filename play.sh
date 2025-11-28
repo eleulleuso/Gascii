@@ -22,8 +22,35 @@ WHITE='\033[1;37m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
+# Parse simple CLI args
+DEBUG=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --debug) DEBUG=1; shift;;
+        --no-debug) DEBUG=0; shift;;
+        *) break;;
+    esac
+done
+
 # Ensure directories exist
 mkdir -p "$VIDEO_DIR" "$AUDIO_DIR" "$FRAMES_BASE"
+
+# Export debug flag to Rust binary
+if [[ $DEBUG -eq 1 ]]; then
+        export BAD_APPLE_DEBUG=1
+fi
+
+# Export char size so Rust side can convert if needed
+export CHAR_WIDTH="$CHAR_WIDTH"
+export CHAR_HEIGHT="$CHAR_HEIGHT"
+
+DEBUG_LOG="$PROJECT_DIR/debug.log"
+debug_log() {
+        local message="$1"
+        local ts
+        ts=$(date +"%Y-%m-%dT%H:%M:%S%z")
+        echo -e "[$ts] $message" | tee -a "$DEBUG_LOG"
+}
 
 # 1. Build Rust Project
 if [[ ! -f "$RUST_BIN" ]]; then
@@ -199,17 +226,13 @@ if command -v ffprobe > /dev/null 2>&1; then
     ORIG_HEIGHT=$(echo "$VIDEO_INFO" | cut -d'x' -f2)
 else
     # Fallback: Assume 16:9 aspect ratio (standard)
-    ORIG_WIDTH=16
-    ORIG_HEIGHT=9
+    ORIG_WIDTH=1920
+    ORIG_HEIGHT=1080
 fi
 
-# FORCE 16:9 Aspect Ratio as per user request
-# This ensures consistent widescreen display without excessive cropping
-ORIG_WIDTH=16
-ORIG_HEIGHT=9
-VIDEO_ASPECT=$(awk "BEGIN {printf \"%.3f\", 16.0 / 9.0}")
+VIDEO_ASPECT=$(awk "BEGIN {printf \"%.3f\", $ORIG_WIDTH / $ORIG_HEIGHT}")
 
-echo -e "${BLUE}📹 Video: ${ORIG_WIDTH}x${ORIG_HEIGHT} (Forced 16:9)${RESET}"
+echo -e "${BLUE}📹 Video: ${ORIG_WIDTH}x${ORIG_HEIGHT} (Original)${RESET}"
 
 # 6. Audio Selection
 echo ""
@@ -301,82 +324,183 @@ if [[ "$SCALE_CHOICE" == "3" ]]; then SCALE_FACTOR=0.5; fi
 if [[ "$SCALE_CHOICE" == "4" ]]; then read -p "Enter Target Width: " MANUAL_WIDTH; fi
 
 # ============================================================
-# 8. Calculate Dimensions
+# ============================================================
+# 8. Calculate Dimensions (pixel-based for Rust decoder & processor)
+# ============================================================
 # ============================================================
 # Debug detected size
-echo -e "${YELLOW}DEBUG: Detected Terminal Size: ${TERM_WIDTH}x${TERM_HEIGHT}${RESET}"
+if [[ $DEBUG -eq 1 ]]; then
+    debug_log "DEBUG: Detected Terminal Size: ${TERM_WIDTH}x${TERM_HEIGHT}"
+fi
 
 MARGIN_X=0
 MARGIN_Y=0
 MAX_CHARS_X=$((TERM_WIDTH - MARGIN_X))
 MAX_CHARS_Y=$((TERM_HEIGHT - MARGIN_Y))
 
-if [[ "$MANUAL_WIDTH" -gt 0 ]]; then
-    WIDTH=$MANUAL_WIDTH
-    HEIGHT=${MANUAL_HEIGHT:-$((WIDTH * 9 / 16 / 2))}
-else
-    # Effective Canvas Size
-    CANVAS_W=$MAX_CHARS_X
-    CANVAS_H=$MAX_CHARS_Y
-    if [[ "$MODE" == "rgb" ]]; then CANVAS_H=$((MAX_CHARS_Y * 2)); fi
-    
-    # Target Aspect Ratio (16:9 = 1.777)
-    TARGET_RATIO=1.777
-    
-    # Calculate Canvas Ratio using awk (safer than bc)
-    CANVAS_RATIO=$(awk -v w=$CANVAS_W -v h=$CANVAS_H "BEGIN {printf \"%.3f\", w / h}")
-    
-    # Compare ratios
-    IS_WIDE=$(awk -v c=$CANVAS_RATIO -v t=$TARGET_RATIO "BEGIN {print (c > t) ? 1 : 0}")
-    
-    if [[ "$ASPECT_CHOICE" == "1" ]]; then
-        # [1] FIT (Letterbox)
-        if [[ "$IS_WIDE" == "1" ]]; then
-            # Canvas is wider -> Fit to Height
-            HEIGHT=$CANVAS_H
-            WIDTH=$(awk -v h=$HEIGHT -v r=$TARGET_RATIO "BEGIN {printf \"%.0f\", h * r}")
-        else
-            # Canvas is taller -> Fit to Width
-            WIDTH=$CANVAS_W
-            HEIGHT=$(awk -v w=$WIDTH -v r=$TARGET_RATIO "BEGIN {printf \"%.0f\", w / r}")
-        fi
-    elif [[ "$ASPECT_CHOICE" == "2" ]]; then
-        # [2] FILL (Crop)
-        if [[ "$IS_WIDE" == "1" ]]; then
-            # Canvas is wider -> Fit to Width (Crop Top/Bottom)
-            WIDTH=$CANVAS_W
-            HEIGHT=$(awk -v w=$WIDTH -v r=$TARGET_RATIO "BEGIN {printf \"%.0f\", w / r}")
-        else
-            # Canvas is taller -> Fit to Height (Crop Sides)
-            HEIGHT=$CANVAS_H
-            WIDTH=$(awk -v h=$HEIGHT -v r=$TARGET_RATIO "BEGIN {printf \"%.0f\", h * r}")
-        fi
-    else
-        # [3] STRETCH
-        WIDTH=$CANVAS_W
-        HEIGHT=$CANVAS_H
+# Resolve char pixel sizes (prefer platform detection if available)
+CHAR_WIDTH=${CHAR_WIDTH:-10}
+CHAR_HEIGHT=${CHAR_HEIGHT:-20}
+
+if [[ -n "$PLATFORM_JSON" ]]; then
+    p_char_w=$(echo "$PLATFORM_JSON" | grep -o '"char_width": [0-9]*' | grep -o '[0-9]*')
+    p_char_h=$(echo "$PLATFORM_JSON" | grep -o '"char_height": [0-9]*' | grep -o '[0-9]*')
+    if [[ -n "$p_char_w" && -n "$p_char_h" ]]; then
+        CHAR_WIDTH=$p_char_w
+        CHAR_HEIGHT=$p_char_h
     fi
-    
-    # Apply Resolution Scale
-    WIDTH=$(awk -v w=$WIDTH -v s=$SCALE_FACTOR "BEGIN {printf \"%.0f\", w * s}")
-    HEIGHT=$(awk -v h=$HEIGHT -v s=$SCALE_FACTOR "BEGIN {printf \"%.0f\", h * s}")
 fi
 
-# Ensure even dimensions
-WIDTH=$((WIDTH / 2 * 2))
-HEIGHT=$((HEIGHT / 2 * 2))
+if [[ $DEBUG -eq 1 ]]; then
+    debug_log "CHAR SIZE resolved from platform: ${CHAR_WIDTH}x${CHAR_HEIGHT}"
+fi
 
-# DEBUG: Print calculated dimensions
-echo -e "${YELLOW}DEBUG: Canvas Calculated: ${WIDTH}x${HEIGHT}${RESET}"
-echo -e "${GREEN}🎯 Final Resolution: ${WIDTH}x${HEIGHT}${RESET}"
+# If ghosy config exists, parse font-size and scale char size heuristically
+if [[ -f "$GHOSY_CONFIG" ]]; then
+    FONT_SIZE_CONF=$(grep -E "^\s*font-size\s*=" "$GHOSY_CONFIG" | sed -E "s/^\s*font-size\s*=\s*([0-9.]+).*$/\1/" || true)
+    if [[ -n "$FONT_SIZE_CONF" ]]; then
+        # Scale character dimensions by font-size as a heuristic. Keep integer pixels.
+        scaled_w=$(awk -v w=$CHAR_WIDTH -v s=$FONT_SIZE_CONF 'BEGIN {printf "%d", (w * s)}')
+        scaled_h=$(awk -v h=$CHAR_HEIGHT -v s=$FONT_SIZE_CONF 'BEGIN {printf "%d", (h * s)}')
+        if [[ $scaled_w -gt 0 ]]; then CHAR_WIDTH=$scaled_w; fi
+        if [[ $scaled_h -gt 0 ]]; then CHAR_HEIGHT=$scaled_h; fi
+        echo -e "${BLUE}Using ghosy font-size=${FONT_SIZE_CONF} scaling char dim to ${CHAR_WIDTH}x${CHAR_HEIGHT}${RESET}"
+    fi
+fi
 
-# Ensure even dimensions for block characters
-WIDTH=$((WIDTH / 2 * 2))
-HEIGHT=$((HEIGHT / 2 * 2))
+export CHAR_WIDTH CHAR_HEIGHT
 
-# DEBUG: Print calculated dimensions
-echo -e "${YELLOW}DEBUG: Terminal ${TERM_WIDTH}x${TERM_HEIGHT} -> Canvas ${WIDTH}x${HEIGHT} (Stretch)${RESET}"
-echo -e "${GREEN}🎯 Canvas Size: ${WIDTH}x${HEIGHT} (Full Screen)${RESET}"
+# Query the terminal size from the Rust binary so we get the same measurement as `crossterm`
+TERM_SIZE_JSON=$("$RUST_BIN" terminal-size 2>/dev/null)
+if [[ -n "$TERM_SIZE_JSON" ]]; then
+    NEW_TERM_COLS=$(echo "$TERM_SIZE_JSON" | grep -o '"columns"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*')
+    if [[ -z "$NEW_TERM_COLS" ]]; then
+        NEW_TERM_COLS=$(echo "$TERM_SIZE_JSON" | grep -o '"raw_columns"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*')
+    fi
+    NEW_TERM_ROWS=$(echo "$TERM_SIZE_JSON" | grep -o '"rows"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*')
+    if [[ -z "$NEW_TERM_ROWS" ]]; then
+        NEW_TERM_ROWS=$(echo "$TERM_SIZE_JSON" | grep -o '"raw_rows"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*')
+    fi
+    if [[ "$NEW_TERM_COLS" =~ ^[0-9]+$ ]] && [[ "$NEW_TERM_ROWS" =~ ^[0-9]+$ ]]; then
+        TERM_WIDTH=$NEW_TERM_COLS
+        TERM_HEIGHT=$NEW_TERM_ROWS
+    fi
+fi
+
+# Compute terminal pixel size
+TERM_PX_WIDTH=$((TERM_WIDTH * CHAR_WIDTH))
+TERM_PX_HEIGHT=$((TERM_HEIGHT * CHAR_HEIGHT))
+
+if [[ $DEBUG -eq 1 ]]; then
+    debug_log "DEBUG: Terminal pixel size: ${TERM_PX_WIDTH}x${TERM_PX_HEIGHT} (CHAR ${CHAR_WIDTH}x${CHAR_HEIGHT})"
+fi
+
+# Target 16:9 box within terminal image pixels (image pixels are 1 per horizontal char and 2 per vertical char-row)
+TARGET_RATIO_PHYSICAL=1.77777778
+# To map to terminal image pixels (C columns x 2R image pixels) we must
+# convert desired physical 16:9 aspect into image pixel aspect, accounting for char aspect
+# image_aspect = (2 * display_aspect^-1?) => derived formula below
+# Derived: image_aspect = (8/9) * (CHAR_HEIGHT / CHAR_WIDTH)
+TARGET_RATIO=$(awk -v c_h=$CHAR_HEIGHT -v c_w=$CHAR_WIDTH 'BEGIN {printf "%.6f", (8.0/9.0) * (c_h / c_w)}')
+# Compute maximum image pixels available based on char grid and half-block mapping
+# Max image width (pixels) = TERM_WIDTH characters
+# Max image height (pixels) = TERM_HEIGHT * 2 (2 image pixels per char row)
+MAX_IMG_W=$TERM_WIDTH
+MAX_IMG_H=$((TERM_HEIGHT * 2))
+
+if (( $(awk "BEGIN {print (${MAX_IMG_W}/${MAX_IMG_H}) > ${TARGET_RATIO}}") )); then
+    # Terminal is wider than target ratio -> limit by height
+    BOX_IMG_H=${MAX_IMG_H}
+    BOX_IMG_W=$(awk -v h=$BOX_IMG_H -v r=$TARGET_RATIO 'BEGIN {printf "%d", h * r}')
+else
+    BOX_IMG_W=${MAX_IMG_W}
+    BOX_IMG_H=$(awk -v w=$BOX_IMG_W -v r=$TARGET_RATIO 'BEGIN {printf "%d", w / r}')
+fi
+
+echo -e "${BLUE}Target 16:9 box within terminal (image pixels columns x image rows): ${BOX_IMG_W}x${BOX_IMG_H}${RESET}"
+
+# Get original video size (ORIG_WIDTH x ORIG_HEIGHT) in pixels
+VIDEO_ORIG_W=$ORIG_WIDTH
+VIDEO_ORIG_H=$ORIG_HEIGHT
+
+if [[ -z "$VIDEO_ORIG_W" || -z "$VIDEO_ORIG_H" || "$VIDEO_ORIG_W" -eq 0 ]]; then
+    # Unknown original size; default to target box
+    SCALE_WIDTH=$BOX_IMG_W
+    SCALE_HEIGHT=$BOX_IMG_H
+else
+    # Fit original video into target box without cropping
+    SCALE_FACTOR_WIDTH=$(awk -v b=$BOX_IMG_W -v o=$VIDEO_ORIG_W 'BEGIN {printf "%f", b / o}')
+    SCALE_FACTOR_HEIGHT=$(awk -v b=$BOX_IMG_H -v o=$VIDEO_ORIG_H 'BEGIN {printf "%f", b / o}')
+    SCALE_FACTOR=$(awk -v a=$SCALE_FACTOR_WIDTH -v b=$SCALE_FACTOR_HEIGHT 'BEGIN {print (a < b) ? a : b }')
+    SCALED_VIDEO_W=$(awk -v o=$VIDEO_ORIG_W -v s=$SCALE_FACTOR 'BEGIN {printf "%d", o * s}')
+    SCALED_VIDEO_H=$(awk -v o=$VIDEO_ORIG_H -v s=$SCALE_FACTOR 'BEGIN {printf "%d", o * s}')
+    # The final frame (decoder target) should be the BOX_IMG dimensions: 16:9 frame
+    SCALE_WIDTH=$BOX_IMG_W
+    SCALE_HEIGHT=$BOX_IMG_H
+fi
+
+# Ensure even height for half-block rendering
+if [ $((SCALE_HEIGHT % 2)) -ne 0 ]; then
+    SCALE_HEIGHT=$((SCALE_HEIGHT - 1))
+fi
+if [ $((SCALE_WIDTH % 2)) -ne 0 ]; then
+    SCALE_WIDTH=$((SCALE_WIDTH - 1))
+fi
+
+PIXEL_WIDTH=${SCALE_WIDTH}
+PIXEL_HEIGHT=${SCALE_HEIGHT}
+
+COLUMNS_NEEDED=$PIXEL_WIDTH
+ROWS_NEEDED=$((PIXEL_HEIGHT / 2))
+
+if [[ $DEBUG -eq 1 ]]; then
+    debug_log "DEBUG: Pixel Canvas: ${PIXEL_WIDTH}x${PIXEL_HEIGHT} (image pixels) -> Columns x Rows: ${COLUMNS_NEEDED}x${ROWS_NEEDED}"
+fi
+echo -e "${GREEN}🎯 Final Pixel Resolution: ${PIXEL_WIDTH}x${PIXEL_HEIGHT} (16:9 fit, no crop)${RESET}"
+
+# Manual override: if user provided char-based manual width, use that (and scale to 16:9)
+if [[ "$MANUAL_WIDTH" -gt 0 ]]; then
+    # Manual width is provided in character columns, not in physical px.
+    PIXEL_WIDTH=$((MANUAL_WIDTH))
+    PIXEL_HEIGHT=$(awk -v w=$PIXEL_WIDTH -v r=$TARGET_RATIO 'BEGIN {printf "%d", w / r}')
+    if [ $((PIXEL_HEIGHT % 2)) -ne 0 ]; then
+        PIXEL_HEIGHT=$((PIXEL_HEIGHT - 1))
+    fi
+    echo -e "${YELLOW}Manual override active: pixel canvas set to ${PIXEL_WIDTH}x${PIXEL_HEIGHT}${RESET}"
+fi
+
+# Safety: Ensure PIXEL dimensions don't exceed maximum image pixels
+if [[ $PIXEL_WIDTH -gt $MAX_IMG_W ]] || [[ $PIXEL_HEIGHT -gt $MAX_IMG_H ]]; then
+    debug_log "Warning: PIXEL dims exceed max: ${PIXEL_WIDTH}x${PIXEL_HEIGHT} vs max ${MAX_IMG_W}x${MAX_IMG_H}. Scaling down."
+    SCALE_FACTOR=$(awk -v p_w=$PIXEL_WIDTH -v p_h=$PIXEL_HEIGHT -v m_w=$MAX_IMG_W -v m_h=$MAX_IMG_H 'BEGIN {printf "%f", (m_w/p_w < m_h/p_h) ? m_w/p_w : m_h/p_h}')
+    PIXEL_WIDTH=$(awk -v w=$PIXEL_WIDTH -v s=$SCALE_FACTOR 'BEGIN {printf "%d", w * s}')
+    PIXEL_HEIGHT=$(awk -v h=$PIXEL_HEIGHT -v s=$SCALE_FACTOR 'BEGIN {printf "%d", h * s}')
+    # Ensure even height
+    if [ $((PIXEL_HEIGHT % 2)) -ne 0 ]; then
+        PIXEL_HEIGHT=$((PIXEL_HEIGHT - 1))
+    fi
+fi
+
+# Final clamp: if PIXEL width still too large for terminal columns, clamp to terminal columns
+if [[ $PIXEL_WIDTH -gt $MAX_IMG_W ]]; then
+    debug_log "Clamping PIXEL_WIDTH from ${PIXEL_WIDTH} to terminal max cols ${MAX_IMG_W}"
+    SCALE_FACTOR=$(awk -v pw=$PIXEL_WIDTH -v mw=$MAX_IMG_W 'BEGIN {printf "%f", mw / pw}')
+    PIXEL_WIDTH=$(awk -v w=$PIXEL_WIDTH -v s=$SCALE_FACTOR 'BEGIN {printf "%d", w * s}')
+    PIXEL_HEIGHT=$(awk -v h=$PIXEL_HEIGHT -v s=$SCALE_FACTOR 'BEGIN {printf "%d", h * s}')
+    if [ $((PIXEL_HEIGHT % 2)) -ne 0 ]; then
+        PIXEL_HEIGHT=$((PIXEL_HEIGHT - 1))
+    fi
+fi
+
+# Extra debug: Log the main computed values
+if [[ $DEBUG -eq 1 ]]; then
+    debug_log "FINAL CONFIG: TERM columns=${TERM_WIDTH} rows=${TERM_HEIGHT} char=${CHAR_WIDTH}x${CHAR_HEIGHT}"
+    debug_log "PLATFORM/SCREEN: screen=${SCREEN_WIDTH}x${SCREEN_HEIGHT} terminal_pixels=${TERM_PX_WIDTH}x${TERM_PX_HEIGHT}"
+    debug_log "MAX IMG size (image pixels) = ${MAX_IMG_W}x${MAX_IMG_H}"
+    debug_log "BOX (target 16:9 box in image pixels) = ${BOX_IMG_W}x${BOX_IMG_H}"
+    debug_log "VIDEO orig = ${VIDEO_ORIG_W}x${VIDEO_ORIG_H} scaled video = ${SCALED_VIDEO_W:-0}x${SCALED_VIDEO_H:-0}"
+    debug_log "PIXEL canvas = ${PIXEL_WIDTH}x${PIXEL_HEIGHT} (cols x image-rows)"
+fi
 
 # ──────────────────────────────────────────────────────────────
 # 9. LAUNCH RUST PLAYER (Real-time)
@@ -403,12 +527,16 @@ echo "Binary Hash: $(shasum "$RUST_BIN" | awk '{print $1}')"
 # Construct the command array
 PLAY_LIVE_CMD=("$RUST_BIN" "play-live" \
     "--video" "$VIDEO_PATH" \
-    "--width" "$WIDTH" \
-    "--height" "$HEIGHT" \
+    "--width" "$PIXEL_WIDTH" \
+    "--height" "$PIXEL_HEIGHT" \
     "--mode" "$MODE")
 
 if [[ -n "$AUDIO_PATH" ]]; then
     PLAY_LIVE_CMD+=("--audio" "$AUDIO_PATH")
+fi
+
+if [[ $DEBUG -eq 1 ]]; then
+    debug_log "Executing: ${PLAY_LIVE_CMD[*]}"
 fi
 
 # Execute

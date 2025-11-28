@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use std::thread;
 use crossterm::event::{self, Event, KeyCode};
+use serde_json::json;
 
 use crate::core::display_manager::{DisplayManager, DisplayMode};
 use crate::core::audio_manager::AudioManager;
@@ -53,9 +54,9 @@ enum Commands {
         video: String,
         #[arg(short, long)]
         audio: Option<String>,
-        #[arg(short, long, default_value_t = 265)]
+        #[arg(short, long, default_value_t = 265, help = "Requested width in pixels for video scaling (applies to the decoder and processor)")]
         width: u32,
-        #[arg(short, long, default_value_t = 65)]
+        #[arg(short, long, default_value_t = 65, help = "Requested height in pixels for video scaling (applies to the decoder and processor)")]
         height: u32,
         #[arg(short, long, default_value_t = 0)]
         fps: u32,
@@ -64,6 +65,8 @@ enum Commands {
     },
     /// Detect platform info
     Detect,
+    /// Query the terminal size as crossterm sees it
+    TerminalSize,
 }
 
 fn main() -> Result<()> {
@@ -83,9 +86,33 @@ fn main() -> Result<()> {
             let info = crate::utils::platform::PlatformInfo::detect()?;
             println!("{}", serde_json::to_string_pretty(&info)?);
         }
+        Commands::TerminalSize => {
+            let (raw_cols, raw_rows) = crossterm::terminal::size()?;
+            let (cols, rows) = normalize_terminal_size(raw_cols, raw_rows);
+            println!("{}", json!({
+                "columns": cols,
+                "rows": rows,
+                "raw_columns": raw_cols,
+                "raw_rows": raw_rows,
+            }));
+        }
     }
 
     Ok(())
+}
+
+fn normalize_terminal_size(raw_cols: u16, raw_rows: u16) -> (u16, u16) {
+    let char_width = std::env::var("CHAR_WIDTH").ok().and_then(|v| v.parse::<u16>().ok());
+    let char_height = std::env::var("CHAR_HEIGHT").ok().and_then(|v| v.parse::<u16>().ok());
+    if let (Some(cw), Some(ch)) = (char_width, char_height) {
+        if cw > 0 && ch > 0 {
+            // If the reported size is unusually large, treat as pixels and convert to cols/rows
+            if raw_cols >= cw.saturating_mul(32) && raw_rows >= ch.saturating_mul(16) {
+                return (raw_cols / cw.max(1), raw_rows / ch.max(1));
+            }
+        }
+    }
+    (raw_cols, raw_rows)
 }
 
 fn play_animation(frames_dir: &str, audio_path: Option<&str>, fps: u32, mode: DisplayMode) -> Result<()> {
@@ -108,7 +135,9 @@ fn play_animation(frames_dir: &str, audio_path: Option<&str>, fps: u32, mode: Di
         audio.play(path)?;
     }
 
-    // 4. Playback Loop
+    // 4. Initialize Frame Processor (based on first frame header) and Playback Loop
+    // We will infer width/height from the first frame header if possible
+    let mut processor_opt: Option<crate::core::processor::FrameProcessor> = None;
     let frame_duration = Duration::from_secs_f64(1.0 / fps as f64);
     let start_time = Instant::now();
     
@@ -135,8 +164,24 @@ fn play_animation(frames_dir: &str, audio_path: Option<&str>, fps: u32, mode: Di
         }
 
         // Render
-        if let Some(frame_data) = frames.get_frame(i) {
-            display.render_frame(frame_data.as_slice())?;
+        if let Some(frame_data_arc) = frames.get_frame(i) {
+            // frame_data is [width(u16)][height(u16)][R,G,B...]
+            let frame_slice = frame_data_arc.as_slice();
+            if frame_slice.len() >= 4 {
+                let w = u16::from_le_bytes([frame_slice[0], frame_slice[1]]) as usize;
+                let h = u16::from_le_bytes([frame_slice[2], frame_slice[3]]) as usize;
+                let pixel_data = &frame_slice[4..];
+
+                // Initialize processor if not set
+                if processor_opt.is_none() {
+                    processor_opt = Some(crate::core::processor::FrameProcessor::new(w, h));
+                }
+
+                if let Some(processor) = processor_opt.as_ref() {
+                    let cells = processor.process_frame(pixel_data);
+                    display.render_diff(&cells, w)?;
+                }
+            }
         }
 
         // Input

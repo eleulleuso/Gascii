@@ -96,7 +96,7 @@ impl VideoDecoder {
             return Ok(None);
         }
 
-        // 2. Resize & Crop (CPU)
+        // 2. Resize & Crop (CPU) + Letterbox into target frame size
         let mut resized = Mat::default();
         let size = core::Size::new(self.width as i32, self.height as i32);
         let start_resize = std::time::Instant::now();
@@ -108,17 +108,50 @@ impl VideoDecoder {
             let roi = core::Rect::new(0, 0, width / 2, height);
             let cropped = Mat::roi(&frame, roi)?;
             // Resize directly from the ROI (no clone needed)
-            imgproc::resize(&cropped, &mut resized, size, 0.0, 0.0, imgproc::INTER_LINEAR)?;
+            // First, compute scale to fit within target size while preserving aspect (letterbox)
+            let orig_w = cropped.cols();
+            let orig_h = cropped.rows();
+            let scale_w = self.width as f64 / orig_w as f64;
+            let scale_h = self.height as f64 / orig_h as f64;
+            let scale = scale_w.min(scale_h);
+            let new_w = ((orig_w as f64 * scale).round() as i32).max(1);
+            let new_h = ((orig_h as f64 * scale).round() as i32).max(1);
+            imgproc::resize(&cropped, &mut resized, core::Size::new(new_w, new_h), 0.0, 0.0, imgproc::INTER_LINEAR)?;
         } else {
-            // Resize directly from original frame
-            imgproc::resize(&frame, &mut resized, size, 0.0, 0.0, imgproc::INTER_LINEAR)?;
+            // Resize directly from original frame but maintain aspect ratio and letterbox if necessary
+            let orig_w = frame.cols();
+            let orig_h = frame.rows();
+            let scale_w = self.width as f64 / orig_w as f64;
+            let scale_h = self.height as f64 / orig_h as f64;
+            let scale = scale_w.min(scale_h);
+            let new_w = ((orig_w as f64 * scale).round() as i32).max(1);
+            let new_h = ((orig_h as f64 * scale).round() as i32).max(1);
+            imgproc::resize(&frame, &mut resized, core::Size::new(new_w, new_h), 0.0, 0.0, imgproc::INTER_LINEAR)?;
         }
         let resize_time = start_resize.elapsed();
 
-        // 3. Color Conversion (CPU)
+        // Create final canvas with letterbox (black background) at target size and center the resized frame
+        let mut canvas = Mat::zeros(self.height as i32, self.width as i32, frame.typ())?.to_mat()?;
+        let x_off = ((self.width as i32 - resized.cols()) / 2).max(0);
+        let y_off = ((self.height as i32 - resized.rows()) / 2).max(0);
+        let roi = core::Rect::new(x_off, y_off, resized.cols(), resized.rows());
+        let mut canvas_roi = Mat::roi_mut(&mut canvas, roi)?;
+        resized.copy_to(&mut canvas_roi)?;
+        // Debug: log offsets if debug env var set
+        if std::env::var("BAD_APPLE_DEBUG").is_ok() {
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            let mut log_path = std::env::current_dir().unwrap_or_default();
+            log_path.push("debug.log");
+            if let Ok(mut file) = OpenOptions::new().append(true).open(&log_path) {
+                let _ = writeln!(file, "VIDEO LETTERBOX: target={}x{} | resized={}x{} | offset={}x{}", self.width, self.height, resized.cols(), resized.rows(), x_off, y_off);
+            }
+        }
+
+        // 3. Color Conversion (CPU) on final canvas
         let start_cvt = std::time::Instant::now();
         let mut rgb = Mat::default();
-        imgproc::cvt_color(&resized, &mut rgb, imgproc::COLOR_BGR2RGB, 0, 
+        imgproc::cvt_color(&canvas, &mut rgb, imgproc::COLOR_BGR2RGB, 0, 
                           core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
         let cvt_time = start_cvt.elapsed();
 

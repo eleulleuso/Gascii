@@ -84,7 +84,21 @@ impl DisplayManager {
         let mut last_bg: Option<(u8, u8, u8)> = None;
         
         // Calculate centering offsets dynamically
-        let (term_cols, term_rows) = terminal::size().unwrap_or((80, 24));
+        let (mut term_cols, mut term_rows) = terminal::size().unwrap_or((80, 24));
+
+        // If environment provides CHAR_WIDTH/CHAR_HEIGHT (pixel size per char), convert if
+        // terminal::size returned pixel dimensions rather than char counts.
+        if let (Ok(cw_str), Ok(ch_str)) = (std::env::var("CHAR_WIDTH"), std::env::var("CHAR_HEIGHT")) {
+            if let (Ok(cw), Ok(ch)) = (cw_str.parse::<u16>(), ch_str.parse::<u16>()) {
+                // If the terminal reports a very large value for term_cols/term_rows, assume it's pixels
+                if term_cols > cw * 16 { // threshold: more than ~16 columns per default
+                    term_cols = (term_cols / cw).max(1);
+                }
+                if term_rows > ch * 8 {
+                    term_rows = (term_rows / ch).max(1);
+                }
+            }
+        }
         let content_width = width as u16;
         let content_height = (cells.len() / width) as u16;
         
@@ -94,6 +108,18 @@ impl DisplayManager {
         // Track virtual cursor position to minimize MoveTo commands
         let mut cursor_x: i32 = -1;
         let mut cursor_y: i32 = -1;
+
+        // Debug logging
+        if std::env::var("BAD_APPLE_DEBUG").is_ok() {
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            let mut log_path = std::env::current_dir().unwrap_or_default();
+            log_path.push("debug.log");
+            if let Ok(mut file) = OpenOptions::new().append(true).open(log_path) {
+                let _ = writeln!(file, "RENDER DEBUG: term={}x{} (after conversion) content={}x{} offset={}x{}",
+                                 term_cols, term_rows, content_width, content_height, offset_x, offset_y);
+            }
+        }
 
         // OPTIMIZATION: Unified loop for both redraw and diff
         for (i, cell) in cells.iter().enumerate() {

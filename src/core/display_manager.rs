@@ -56,6 +56,22 @@ impl DisplayManager {
         Ok(())
     }
 
+    /// Return terminal size in character columns and rows, converting from pixels when needed.
+    pub fn terminal_size_chars(&self) -> Result<(u16, u16)> {
+        let (mut term_cols, mut term_rows) = terminal::size()?;
+        if let (Ok(cw_str), Ok(ch_str)) = (std::env::var("CHAR_WIDTH"), std::env::var("CHAR_HEIGHT")) {
+            if let (Ok(cw), Ok(ch)) = (cw_str.parse::<u16>(), ch_str.parse::<u16>()) {
+                if term_cols > cw * 16 {
+                    term_cols = (term_cols / cw).max(1);
+                }
+                if term_rows > ch * 8 {
+                    term_rows = (term_rows / ch).max(1);
+                }
+            }
+        }
+        Ok((term_cols, term_rows))
+    }
+
     // Optimized Diffing Renderer
     // Takes a grid of CellData (calculated by Processor) and updates the terminal.
     pub fn render_diff(&mut self, cells: &[crate::core::processor::CellData], width: usize) -> Result<()> {

@@ -62,11 +62,15 @@ enum Commands {
         fps: u32,
         #[arg(short, long, value_enum, default_value_t = DisplayMode::Rgb)]
         mode: DisplayMode,
+        #[arg(short, long, default_value_t = false, help = "If true, Fill mode: crop to fill 16:9 box (center crop)")]
+        fill: bool,
     },
     /// Detect platform info
     Detect,
     /// Query the terminal size as crossterm sees it
     TerminalSize,
+    /// Interactive Mode (Menu)
+    Interactive,
 }
 
 fn main() -> Result<()> {
@@ -79,8 +83,8 @@ fn main() -> Result<()> {
         Commands::Play { frames_dir, audio, fps, mode } => {
             play_animation(frames_dir, audio.as_deref(), *fps, *mode)?;
         }
-        Commands::PlayLive { video, audio, width, height, fps, mode } => {
-            crate::core::player::play_realtime(video, audio.as_deref(), *width, *height, *fps, *mode)?;
+        Commands::PlayLive { video, audio, width, height, fps, mode, fill } => {
+            crate::core::player::play_realtime(video, audio.as_deref(), *width, *height, *fps, *mode, *fill)?;
         }
         Commands::Detect => {
             let info = crate::utils::platform::PlatformInfo::detect()?;
@@ -95,6 +99,9 @@ fn main() -> Result<()> {
                 "raw_columns": raw_cols,
                 "raw_rows": raw_rows,
             }));
+        }
+        Commands::Interactive => {
+            crate::core::interactive::run_interactive_mode()?;
         }
     }
 

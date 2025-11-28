@@ -14,10 +14,11 @@ pub struct VideoDecoder {
     height: u32,
     fps: f64,
     needs_crop: bool,
+    fill_mode: bool,
 }
 
 impl VideoDecoder {
-    pub fn new(path: &str, width: u32, height: u32) -> Result<Self> {
+    pub fn new(path: &str, width: u32, height: u32, fill_mode: bool) -> Result<Self> {
         // Setup logging with absolute path
         let mut log_path = std::env::current_dir()?;
         log_path.push("debug.log");
@@ -74,6 +75,7 @@ impl VideoDecoder {
             height,
             fps,
             needs_crop,
+            fill_mode,
         })
     }
 
@@ -113,7 +115,7 @@ impl VideoDecoder {
             let orig_h = cropped.rows();
             let scale_w = self.width as f64 / orig_w as f64;
             let scale_h = self.height as f64 / orig_h as f64;
-            let scale = scale_w.min(scale_h);
+            let scale = if self.fill_mode { scale_w.max(scale_h) } else { scale_w.min(scale_h) };
             let new_w = ((orig_w as f64 * scale).round() as i32).max(1);
             let new_h = ((orig_h as f64 * scale).round() as i32).max(1);
             imgproc::resize(&cropped, &mut resized, core::Size::new(new_w, new_h), 0.0, 0.0, imgproc::INTER_LINEAR)?;
@@ -123,7 +125,7 @@ impl VideoDecoder {
             let orig_h = frame.rows();
             let scale_w = self.width as f64 / orig_w as f64;
             let scale_h = self.height as f64 / orig_h as f64;
-            let scale = scale_w.min(scale_h);
+            let scale = if self.fill_mode { scale_w.max(scale_h) } else { scale_w.min(scale_h) };
             let new_w = ((orig_w as f64 * scale).round() as i32).max(1);
             let new_h = ((orig_h as f64 * scale).round() as i32).max(1);
             imgproc::resize(&frame, &mut resized, core::Size::new(new_w, new_h), 0.0, 0.0, imgproc::INTER_LINEAR)?;
@@ -131,12 +133,39 @@ impl VideoDecoder {
         let resize_time = start_resize.elapsed();
 
         // Create final canvas with letterbox (black background) at target size and center the resized frame
+        // If fill_mode is true and resized is larger than canvas, crop center; otherwise, letterbox
         let mut canvas = Mat::zeros(self.height as i32, self.width as i32, frame.typ())?.to_mat()?;
-        let x_off = ((self.width as i32 - resized.cols()) / 2).max(0);
-        let y_off = ((self.height as i32 - resized.rows()) / 2).max(0);
-        let roi = core::Rect::new(x_off, y_off, resized.cols(), resized.rows());
-        let mut canvas_roi = Mat::roi_mut(&mut canvas, roi)?;
-        resized.copy_to(&mut canvas_roi)?;
+        let mut x_off = 0;
+        let mut y_off = 0;
+        if resized.cols() > self.width as i32 || resized.rows() > self.height as i32 {
+            // Crop center of resized to fit canvas
+            let crop_x = ((resized.cols() - self.width as i32) / 2).max(0);
+            let crop_y = ((resized.rows() - self.height as i32) / 2).max(0);
+            let crop_rect = core::Rect::new(crop_x, crop_y, self.width as i32, self.height as i32);
+            let cropped = Mat::roi(&resized, crop_rect)?;
+            cropped.copy_to(&mut canvas)?;
+            // offsets are zero in this case
+            let x_off = 0;
+            let y_off = 0;
+            if std::env::var("BAD_APPLE_DEBUG").is_ok() {
+                use std::fs::OpenOptions;
+                use std::io::Write;
+                let mut log_path = std::env::current_dir().unwrap_or_default();
+                log_path.push("debug.log");
+                    if let Ok(mut file) = OpenOptions::new().append(true).open(&log_path) {
+                        let _ = writeln!(file, "VIDEO CROP: target={}x{} | resized={}x{} | crop={}x{}@{}x{}", self.width, self.height, resized.cols(), resized.rows(), self.width, self.height, crop_x, crop_y);
+                }
+            }
+        } else {
+            // letterbox (center)
+            x_off = ((self.width as i32 - resized.cols()) / 2).max(0);
+            y_off = ((self.height as i32 - resized.rows()) / 2).max(0);
+            x_off = ((self.width as i32 - resized.cols()) / 2).max(0);
+            y_off = ((self.height as i32 - resized.rows()) / 2).max(0);
+            let roi = core::Rect::new(x_off, y_off, resized.cols(), resized.rows());
+            let mut canvas_roi = Mat::roi_mut(&mut canvas, roi)?;
+            resized.copy_to(&mut canvas_roi)?;
+        }
         // Debug: log offsets if debug env var set
         if std::env::var("BAD_APPLE_DEBUG").is_ok() {
             use std::fs::OpenOptions;

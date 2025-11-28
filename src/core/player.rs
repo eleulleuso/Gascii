@@ -14,24 +14,51 @@ pub fn play_realtime(
     height: u32,
     fps: u32,
     mode: DisplayMode,
+    fill: bool,
 ) -> Result<()> {
     // 1. Initialize Display & Audio
     let mut display = DisplayManager::new(mode)?;
     let audio = AudioManager::new()?;
+
+    // Keep requested values mutable for possible clamping
+    let mut req_width = width;
+    let mut req_height = height;
 
     // 2. Start Audio
     if let Some(path) = audio_path {
         audio.play(path)?;
     }
 
+    // 2.1 Ensure width/height fit in the terminal; clamp to Display size
+    {
+        let (term_cols, term_rows) = display.terminal_size_chars()?;
+        let max_img_w = term_cols as u32;
+        let max_img_h = (term_rows as u32) * 2;
+        if req_width > max_img_w || req_height > max_img_h {
+            // Compute scale to fit
+            let scale_w = max_img_w as f64 / width as f64;
+            let scale_h = max_img_h as f64 / height as f64;
+            let scale = scale_w.min(scale_h);
+            let new_w = (req_width as f64 * scale).floor() as u32;
+            let new_h = (req_height as f64 * scale).floor() as u32;
+            eprintln!("⚠️  Requested video size {}x{} is larger than terminal max {}x{}: scaling to {}x{}",
+                      width, height, max_img_w, max_img_h, new_w, new_h);
+            // Replace width/height
+            // NOTE: For safety we set to max 1
+            req_width = new_w.max(1);
+            req_height = new_h.max(1);
+            // We'll shadow the local vars by using req_width/req_height for the rest of the function
+        }
+    }
+
     // 3. Start Video Decoder
-    println!("Initializing video decoder...");
-    let mut decoder = crate::core::video_decoder::VideoDecoder::new(video_path, width, height)?;
+    println!("Initializing video decoder with target: {}x{}... fill={}", req_width, req_height, fill);
+    let mut decoder = crate::core::video_decoder::VideoDecoder::new(video_path, req_width, req_height, fill)?;
     let actual_fps = decoder.get_fps();
     println!("Video decoder started. Detected FPS: {:.2}", actual_fps);
     
     // 4. Initialize Frame Processor (Rayon)
-    let processor = crate::core::processor::FrameProcessor::new(width as usize, height as usize);
+    let processor = crate::core::processor::FrameProcessor::new(req_width as usize, req_height as usize);
 
     // 5. Create Ring Buffer (2 seconds)
     let buffer_capacity = (actual_fps * 2.0) as usize;

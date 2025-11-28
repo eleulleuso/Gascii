@@ -1,6 +1,4 @@
-use anyhow::{Context, Result};
-
-use std::io::Read;
+use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,33 +26,29 @@ pub fn play_realtime(
 
     // 3. Start Video Decoder
     println!("Initializing video decoder...");
-    let mut decoder = crate::core::video_decoder::VideoDecoder::new(video_path, width, height, fps)?;
-    let mut stdout = decoder.child.take_stdout().context("Failed to take stdout")?;
-    println!("Video decoder started. Check debug.log for details.");
+    let mut decoder = crate::core::video_decoder::VideoDecoder::new(video_path, width, height)?;
+    let actual_fps = decoder.get_fps();
+    println!("Video decoder started. Detected FPS: {:.2}", actual_fps);
     
     // 4. Initialize Frame Processor (Rayon)
     let processor = crate::core::processor::FrameProcessor::new(width as usize, height as usize);
 
-    // 5. Create Ring Buffer (2 seconds = 48 frames at 24fps)
-    let buffer_capacity = (fps * 2) as usize;
+    // 5. Create Ring Buffer (2 seconds)
+    let buffer_capacity = (actual_fps * 2.0) as usize;
     let frame_buffer = crate::core::frame_buffer::FrameBuffer::new(buffer_capacity);
     let queue = frame_buffer.clone_queue();
 
-    let frame_size = (width * height * 3) as usize;
-
-    // 6. Spawn FFmpeg Reader Thread (Producer)
+    // 6. Spawn OpenCV Reader Thread (Producer)
     let running_reader = Arc::new(AtomicBool::new(true));
     let r_clone = running_reader.clone();
     
     let reader_handle = thread::spawn(move || {
-        let mut buffer = vec![0u8; frame_size];
         let mut frames_read = 0u64;
         
         while r_clone.load(Ordering::SeqCst) {
-            match stdout.read_exact(&mut buffer) {
-                Ok(_) => {
+            match decoder.read_frame() {
+                Ok(Some(buffer)) => {
                     // BLOCKING push: Wait until buffer has space
-                    // This ensures we never drop frames and maintain perfect sync
                     while queue.push(buffer.clone()).is_err() {
                         // Buffer full - wait for consumer to catch up
                         thread::sleep(Duration::from_micros(100));
@@ -66,32 +60,34 @@ pub fn play_realtime(
                     }
                     frames_read += 1;
                 }
-                Err(_) => {
-                    // EOF or error - exit reader thread
+                Ok(None) => {
+                    // EOF
+                    println!("OpenCV reader: End of video");
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("Error reading frame: {}", e);
                     break;
                 }
             }
         }
         
-        println!("FFmpeg reader thread exited. Frames read: {}", frames_read);
+        println!("OpenCV reader thread exited. Frames read: {}", frames_read);
     });
 
     // 7. Main Playback Loop (Consumer)
-    // Wait briefly for FPS detection
+    // Wait briefly for buffer to fill
     thread::sleep(Duration::from_millis(200));
     
-    // Get actual video FPS (auto-detected from FFmpeg)
-    let actual_fps = decoder.fps_detector.get_fps_or(fps);
-    
     // Warn if FPS mismatch
-    if (actual_fps - fps as f32).abs() > 0.5 {
+    if (actual_fps - fps as f64).abs() > 0.5 {
         println!("⚠️  FPS MISMATCH DETECTED:");
         println!("   User requested: {}fps", fps);
         println!("   Video actual:   {:.2}fps", actual_fps);
         println!("   Using actual video FPS for sync");
     }
     
-    let frame_duration = Duration::from_secs_f64(1.0 / actual_fps as f64);
+    let frame_duration = Duration::from_secs_f64(1.0 / actual_fps);
     let start_time = Instant::now();
     let mut frame_idx = 0u64;
 
@@ -183,8 +179,8 @@ pub fn play_realtime(
                 let avg_drift = cumulative_drift.as_micros() / frames_since_report as u128;
                 let avg_render = frame_render_time.as_micros();
                 
-                println!("FPS: {:.1}/{} | Buffer: {:.0}% | Drift: {}μs (max: {}μs) | Render: {}μs | Frame: {}", 
-                         fps_actual, fps, 
+                println!("FPS: {:.1}/{:.1} | Buffer: {:.0}% | Drift: {}μs (max: {}μs) | Render: {}μs | Frame: {}", 
+                         fps_actual, actual_fps, 
                          buffer_fill * 100.0, 
                          avg_drift,
                          max_drift.as_micros(),

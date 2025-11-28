@@ -93,7 +93,7 @@ echo " ║ |_| \_\__,_|\__,_|   /_/   \_\ .__/| .__/|_|\___(_)          ║"
 echo " ║                              |_|   |_|                       ║"
 echo " ╚══════════════════════════════════════════════════════════════╝"
 echo -e "${RESET}"
-echo -e "${PURPLE}   RUST ENGINE v1.0${RESET} ${BLUE}|${RESET} ${WHITE}SCREEN ADAPTIVE${RESET} ${BLUE}|${RESET} ${CYAN}120 FPS${RESET}"
+echo -e "${PURPLE}   OpenCV ENGINE v2.0${RESET} ${BLUE}|${RESET} ${WHITE}GPU ACCELERATED${RESET} ${BLUE}|${RESET} ${CYAN}NATIVE FPS${RESET}"
 echo -e "${GREEN}   터미널: ${TERM_WIDTH}x${TERM_HEIGHT}${RESET}"
 echo -e "${GREEN}   스크린: ${SCREEN_WIDTH}x${SCREEN_HEIGHT} (${SCREEN_ASPECT})${RESET}"
 echo -e "${BLUE} ──────────────────────────────────────────────────────────────${RESET}"
@@ -261,8 +261,8 @@ echo -e "${GREEN}🎯 Canvas Size: ${WIDTH}x${HEIGHT} (Half-Block 16:9)${RESET}"
 # ──────────────────────────────────────────────────────────────
 
 echo ""
-echo -e "${BOLD}🚀 LAUNCHING REAL-TIME PLAYBACK${RESET}"
-echo "   (Direct 4K/60fps Rendering Engine)"
+echo -e "${BOLD}🚀 LAUNCHING OpenCV PLAYBACK${RESET}"
+echo "   (Hardware-Accelerated Video Decoding)"
 echo ""
 
 # Build if needed

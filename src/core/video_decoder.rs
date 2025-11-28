@@ -16,6 +16,14 @@ pub struct VideoDecoder {
     fill_mode: bool,
 }
 
+use crossbeam_channel::Sender;
+
+pub struct FrameData {
+    pub buffer: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
 impl VideoDecoder {
     pub fn new(path: &str, width: u32, height: u32, fill_mode: bool) -> Result<Self> {
         // Setup logging with absolute path
@@ -75,6 +83,32 @@ impl VideoDecoder {
         self.fps
     }
 
+    pub fn spawn_decoding_thread(mut self, sender: Sender<FrameData>) -> std::thread::JoinHandle<Result<()>> {
+        std::thread::spawn(move || {
+            loop {
+                let mut buffer = Vec::new();
+                match self.read_frame_into(&mut buffer) {
+                    Ok(true) => {
+                        let frame = FrameData {
+                            buffer,
+                            width: self.width,
+                            height: self.height,
+                        };
+                        if sender.send(frame).is_err() {
+                            break; // Receiver dropped
+                        }
+                    }
+                    Ok(false) => break, // EOF
+                    Err(e) => {
+                        eprintln!("Decoding error: {}", e);
+                        break;
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
     pub fn read_frame(&mut self) -> Result<Option<Vec<u8>>> {
         let mut buffer = Vec::new();
         if self.read_frame_into(&mut buffer)? {
@@ -117,8 +151,6 @@ impl VideoDecoder {
         // Create final canvas with letterbox (black background) at target size and center the resized frame
         // If fill_mode is true and resized is larger than canvas, crop center; otherwise, letterbox
         let mut canvas = Mat::zeros(self.height as i32, self.width as i32, frame.typ())?.to_mat()?;
-        let mut x_off = 0;
-        let mut y_off = 0;
         if resized.cols() > self.width as i32 || resized.rows() > self.height as i32 {
             // Crop center of resized to fit canvas
             let crop_x = ((resized.cols() - self.width as i32) / 2).max(0);
@@ -128,8 +160,8 @@ impl VideoDecoder {
             cropped.copy_to(&mut canvas)?;
         } else {
             // letterbox (center)
-            x_off = ((self.width as i32 - resized.cols()) / 2).max(0);
-            y_off = ((self.height as i32 - resized.rows()) / 2).max(0);
+            let x_off = ((self.width as i32 - resized.cols()) / 2).max(0);
+            let y_off = ((self.height as i32 - resized.rows()) / 2).max(0);
             let roi = core::Rect::new(x_off, y_off, resized.cols(), resized.rows());
             let mut canvas_roi = Mat::roi_mut(&mut canvas, roi)?;
             resized.copy_to(&mut canvas_roi)?;

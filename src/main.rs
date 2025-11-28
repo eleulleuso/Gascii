@@ -1,5 +1,6 @@
 mod core;
 mod utils;
+mod modules;
 
 use clap::{Parser, Subcommand};
 use anyhow::{Result, Context};
@@ -14,6 +15,9 @@ use crate::core::display_manager::{DisplayManager, DisplayMode};
 use crate::core::audio_manager::AudioManager;
 use crate::core::frame_manager::FrameManager;
 use crate::core::extractor;
+
+// New module imports
+use crate::modules::ui::run_interactive_mode;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -69,7 +73,7 @@ enum Commands {
     Detect,
     /// Query the terminal size as crossterm sees it
     TerminalSize,
-    /// Interactive Mode (Menu)
+    /// Interactive mode with TUI
     Interactive,
 }
 
@@ -101,7 +105,7 @@ fn main() -> Result<()> {
             }));
         }
         Commands::Interactive => {
-            crate::core::interactive::run_interactive_mode()?;
+            run_interactive_mode()?;
         }
     }
 

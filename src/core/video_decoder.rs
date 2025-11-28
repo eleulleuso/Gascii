@@ -76,23 +76,31 @@ impl VideoDecoder {
     }
 
     pub fn read_frame(&mut self) -> Result<Option<Vec<u8>>> {
+        let mut buffer = Vec::new();
+        if self.read_frame_into(&mut buffer)? {
+            Ok(Some(buffer))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn read_frame_into(&mut self, buffer: &mut Vec<u8>) -> Result<bool> {
         let start_total = std::time::Instant::now();
         let mut frame = Mat::default();
         
         // 1. Decode (GPU/CPU)
         let start_decode = std::time::Instant::now();
         if !self.capture.read(&mut frame)? {
-            return Ok(None); // EOF
+            return Ok(false); // EOF
         }
         let decode_time = start_decode.elapsed();
         
         if frame.empty() {
-            return Ok(None);
+            return Ok(false);
         }
 
         // 2. Resize & Crop (CPU) + Letterbox into target frame size
         let mut resized = Mat::default();
-        let size = core::Size::new(self.width as i32, self.height as i32);
         let start_resize = std::time::Instant::now();
 
         // Resize directly from original frame but maintain aspect ratio and letterbox if necessary
@@ -118,37 +126,13 @@ impl VideoDecoder {
             let crop_rect = core::Rect::new(crop_x, crop_y, self.width as i32, self.height as i32);
             let cropped = Mat::roi(&resized, crop_rect)?;
             cropped.copy_to(&mut canvas)?;
-            // offsets are zero in this case
-            let x_off = 0;
-            let y_off = 0;
-            if std::env::var("BAD_APPLE_DEBUG").is_ok() {
-                use std::fs::OpenOptions;
-                use std::io::Write;
-                let mut log_path = std::env::current_dir().unwrap_or_default();
-                log_path.push("debug.log");
-                    if let Ok(mut file) = OpenOptions::new().append(true).open(&log_path) {
-                        let _ = writeln!(file, "VIDEO CROP: target={}x{} | resized={}x{} | crop={}x{}@{}x{}", self.width, self.height, resized.cols(), resized.rows(), self.width, self.height, crop_x, crop_y);
-                }
-            }
         } else {
             // letterbox (center)
-            x_off = ((self.width as i32 - resized.cols()) / 2).max(0);
-            y_off = ((self.height as i32 - resized.rows()) / 2).max(0);
             x_off = ((self.width as i32 - resized.cols()) / 2).max(0);
             y_off = ((self.height as i32 - resized.rows()) / 2).max(0);
             let roi = core::Rect::new(x_off, y_off, resized.cols(), resized.rows());
             let mut canvas_roi = Mat::roi_mut(&mut canvas, roi)?;
             resized.copy_to(&mut canvas_roi)?;
-        }
-        // Debug: log offsets if debug env var set
-        if std::env::var("BAD_APPLE_DEBUG").is_ok() {
-            use std::fs::OpenOptions;
-            use std::io::Write;
-            let mut log_path = std::env::current_dir().unwrap_or_default();
-            log_path.push("debug.log");
-            if let Ok(mut file) = OpenOptions::new().append(true).open(&log_path) {
-                let _ = writeln!(file, "VIDEO LETTERBOX: target={}x{} | resized={}x{} | offset={}x{}", self.width, self.height, resized.cols(), resized.rows(), x_off, y_off);
-            }
         }
 
         // 3. Color Conversion (CPU) on final canvas
@@ -164,6 +148,9 @@ impl VideoDecoder {
         }
         
         let data = rgb.data_bytes()?;
+        buffer.clear();
+        buffer.extend_from_slice(data);
+        
         let total_time = start_total.elapsed();
 
         // Log slow frames (> 10ms) to debug.log
@@ -183,6 +170,6 @@ impl VideoDecoder {
             }
         }
 
-        Ok(Some(data.to_vec()))
+        Ok(true)
     }
 }

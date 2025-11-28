@@ -6,7 +6,7 @@ use crossterm::{
     QueueableCommand,
     ExecutableCommand,
 };
-use std::io::{Stdout, Write};
+use std::io::{Stdout, Write, BufWriter};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
 pub enum DisplayMode {
@@ -15,7 +15,7 @@ pub enum DisplayMode {
 }
 
 pub struct DisplayManager {
-    stdout: Stdout,
+    stdout: BufWriter<Stdout>,
     mode: DisplayMode,
     last_cells: Option<Vec<crate::core::processor::CellData>>,
     render_buffer: Vec<u8>,
@@ -23,31 +23,40 @@ pub struct DisplayManager {
 
 impl DisplayManager {
     pub fn new(mode: DisplayMode) -> Result<Self> {
-        let mut stdout = std::io::stdout();
+        // Use BufWriter with a large buffer (e.g., 128KB) to minimize syscalls
+        let stdout = BufWriter::with_capacity(128 * 1024, std::io::stdout());
+        let mut dm = Self {
+            stdout,
+            mode,
+            last_cells: None,
+            render_buffer: Vec::with_capacity(1024 * 1024), // Pre-allocate 1MB for 4K rendering
+        };
+        
+        dm.initialize_terminal()?;
+        
+        Ok(dm)
+    }
+
+    fn initialize_terminal(&mut self) -> Result<()> {
         terminal::enable_raw_mode()?;
-        stdout.execute(EnterAlternateScreen)?;
-        stdout.execute(cursor::Hide)?;
+        self.stdout.execute(EnterAlternateScreen)?;
+        self.stdout.execute(cursor::Hide)?;
         
         // Disable line wrapping (DECRAWM) to prevent scrolling at edges
-        stdout.execute(Print("\x1b[?7l"))?;
+        self.stdout.execute(Print("\x1b[?7l"))?;
         
         // === STRONGER V-SYNC ENFORCEMENT ===
         // Enable synchronized updates mode (DECSM 2026)
         // This ensures terminal waits for complete frame before rendering
-        stdout.execute(Print("\x1b[?2026h"))?;
+        self.stdout.execute(Print("\x1b[?2026h"))?;
         
         // Disable cursor blinking (reduces screen tearing)
-        stdout.execute(Print("\x1b[?12l"))?;
+        self.stdout.execute(Print("\x1b[?12l"))?;
         
         // Request high refresh rate mode if supported
-        stdout.execute(Print("\x1b[?1049h"))?; // Alternative screen buffer
+        self.stdout.execute(Print("\x1b[?1049h"))?; // Alternative screen buffer
         
-        Ok(Self {
-            stdout,
-            mode,
-            last_cells: None,
-            render_buffer: Vec::with_capacity(64 * 1024), // Pre-allocate 64KB
-        })
+        Ok(())
     }
 
 

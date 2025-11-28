@@ -26,20 +26,30 @@ impl FrameProcessor {
     // 
     // OPTIMIZATION: Process rows in chunks for better cache locality
     pub fn process_frame(&self, frame_data: &[u8]) -> Vec<CellData> {
+        let mut output = Vec::new();
+        self.process_frame_into(frame_data, &mut output);
+        output
+    }
+
+    pub fn process_frame_into(&self, frame_data: &[u8], output: &mut Vec<CellData>) {
         // Validate input size in debug builds to avoid unsafe out-of-bounds access.
         let expected_len = self.width * self.height * 3;
         debug_assert!(frame_data.len() >= expected_len, "Frame size is too small: got {} expected {}", frame_data.len(), expected_len);
         let term_width = self.width;           // Canvas width IS terminal width
         let term_height = self.height / 2;     // Canvas height is 2x terminal height
         
+        // Resize output buffer if needed
+        let total_cells = term_width * term_height;
+        if output.len() != total_cells {
+            output.resize(total_cells, CellData { char: ' ', fg: (0,0,0), bg: (0,0,0) });
+        }
+
         // Process in row-major order for cache-friendly memory access
         // Use Rayon for parallel row processing
-        (0..term_height)
-            .into_par_iter()
-            .flat_map(|cy| {
-                // Each row produces term_width cells
-                let mut row_cells = Vec::with_capacity(term_width);
-                
+        // We split the output buffer into rows and process them in parallel
+        output.par_chunks_mut(term_width)
+            .enumerate()
+            .for_each(|(cy, row_cells)| {
                 for cx in 0..term_width {
                     // Map char (cx, cy) to pixels: top=(cx, 2*cy), bottom=(cx, 2*cy+1)
                     let py_top = cy * 2;
@@ -67,16 +77,13 @@ impl FrameProcessor {
                     let top_color = get_pixel_fast(cx, py_top);
                     let bottom_color = get_pixel_fast(cx, py_bottom);
 
-                    row_cells.push(CellData {
+                    row_cells[cx] = CellData {
                         char: '▀', // Upper Half Block
                         fg: top_color,
                         bg: bottom_color,
-                    });
+                    };
                 }
-                
-                row_cells
-            })
-            .collect()
+            });
     }
 }
 

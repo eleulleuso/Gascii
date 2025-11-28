@@ -71,7 +71,10 @@ impl DisplayManager {
             force_redraw = true;
         }
 
-        let last_cells = self.last_cells.as_mut().expect("last_cells should be set by now");
+        let last_cells = match &mut self.last_cells {
+            Some(v) => v,
+            None => { return Ok(()); }
+        };
         
         // Reuse buffer
         self.render_buffer.clear();
@@ -180,6 +183,70 @@ impl DisplayManager {
         
         Ok(())
     }
+
+    /// Generate the render buffer without writing to stdout. Useful for testing.
+    pub fn render_buffer_for(&mut self, cells: &[crate::core::processor::CellData], width: usize) -> Result<Vec<u8>> {
+        self.render_buffer.clear();
+        let buffer = &mut self.render_buffer;
+
+        let mut last_fg: Option<(u8, u8, u8)> = None;
+        let mut last_bg: Option<(u8, u8, u8)> = None;
+
+        let (term_cols, term_rows) = terminal::size().unwrap_or((80, 24));
+        let content_width = width as u16;
+        let content_height = (cells.len() / width) as u16;
+        let offset_x = if term_cols > content_width { (term_cols - content_width) / 2 } else { 0 };
+        let offset_y = if term_rows > content_height { (term_rows - content_height) / 2 } else { 0 };
+
+        let mut cursor_x: i32 = -1;
+        let mut cursor_y: i32 = -1;
+
+        for (i, cell) in cells.iter().enumerate() {
+            let x = (i % width) as u16;
+            let y = (i / width) as u16;
+            let target_x = x + offset_x;
+            let target_y = y + offset_y;
+            if target_x >= term_cols || target_y >= term_rows {
+                cursor_x = -1;
+                continue;
+            }
+            if cursor_x != target_x as i32 || cursor_y != target_y as i32 {
+                buffer.extend_from_slice(b"\x1b[");
+                buffer.extend_from_slice((target_y + 1).to_string().as_bytes());
+                buffer.extend_from_slice(b";");
+                buffer.extend_from_slice((target_x + 1).to_string().as_bytes());
+                buffer.extend_from_slice(b"H");
+                cursor_x = target_x as i32;
+                cursor_y = target_y as i32;
+            }
+            if Some(cell.fg) != last_fg {
+                buffer.extend_from_slice(b"\x1b[38;2;");
+                buffer.extend_from_slice(cell.fg.0.to_string().as_bytes());
+                buffer.extend_from_slice(b";");
+                buffer.extend_from_slice(cell.fg.1.to_string().as_bytes());
+                buffer.extend_from_slice(b";");
+                buffer.extend_from_slice(cell.fg.2.to_string().as_bytes());
+                buffer.extend_from_slice(b"m");
+                last_fg = Some(cell.fg);
+            }
+            if Some(cell.bg) != last_bg {
+                buffer.extend_from_slice(b"\x1b[48;2;");
+                buffer.extend_from_slice(cell.bg.0.to_string().as_bytes());
+                buffer.extend_from_slice(b";");
+                buffer.extend_from_slice(cell.bg.1.to_string().as_bytes());
+                buffer.extend_from_slice(b";");
+                buffer.extend_from_slice(cell.bg.2.to_string().as_bytes());
+                buffer.extend_from_slice(b"m");
+                last_bg = Some(cell.bg);
+            }
+            let mut b_dst = [0u8; 4];
+            buffer.extend_from_slice(cell.char.encode_utf8(&mut b_dst).as_bytes());
+            cursor_x += 1;
+        }
+
+        buffer.extend_from_slice(b"\x1b[0m");
+        Ok(buffer.clone())
+    }
 }
 
 impl Drop for DisplayManager {
@@ -187,5 +254,29 @@ impl Drop for DisplayManager {
         let _ = self.stdout.execute(cursor::Show);
         let _ = self.stdout.execute(LeaveAlternateScreen);
         let _ = terminal::disable_raw_mode();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::processor::CellData;
+
+    #[test]
+    fn test_render_buffer_for_simple() {
+        let mut dm = DisplayManager::new(DisplayMode::Rgb).unwrap();
+        // Make small 2x2 image (term_width 2 -> cells=4)
+        let cells = vec![
+            CellData{ char: 'A', fg: (255,0,0), bg: (0,0,0) },
+            CellData{ char: 'B', fg: (255,0,0), bg: (0,0,0) },
+            CellData{ char: 'C', fg: (0,255,0), bg: (0,0,0) },
+            CellData{ char: 'D', fg: (0,255,0), bg: (0,0,0) },
+        ];
+
+        let buf = dm.render_buffer_for(&cells, 2).unwrap();
+        let s = String::from_utf8_lossy(&buf);
+        // Expect to find color codes and characters
+        assert!(s.contains("38;2;255;0;0") || s.contains("38;2;0;255;0"));
+        assert!(s.contains("A") || s.contains("B") || s.contains("C") || s.contains("D"));
     }
 }

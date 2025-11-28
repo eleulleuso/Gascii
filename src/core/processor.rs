@@ -79,3 +79,43 @@ impl FrameProcessor {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_process_frame_half_block() {
+        // Width 2, Height 4 => term_height = 2
+        let proc = FrameProcessor::new(2, 4);
+        // Create a frame of 2x4 pixels = 8 pixels -> 8*3=24 bytes
+        // We'll color top row pixels red and bottoms green for the first terminal row
+        // Layout: row major [ (x=0,y=0), (x=1,y=0), (x=0,y=1), (x=1,y=1), (x=0,y=2), (x=1,y=2), (x=0,y=3), (x=1,y=3) ]
+        let mut frame = vec![0u8; 2 * 4 * 3];
+        // (0,0) red
+        frame[0] = 255; frame[1]=0; frame[2]=0;
+        // (1,0) red
+        frame[3] = 255; frame[4]=0; frame[5]=0;
+        // (0,1) green
+        frame[6] = 0; frame[7]=255; frame[8]=0;
+        // (1,1) green
+        frame[9] = 0; frame[10]=255; frame[11]=0;
+        // (0,2) blue
+        frame[12] = 0; frame[13]=0; frame[14]=255;
+        // (1,2) blue
+        frame[15] = 0; frame[16]=0; frame[17]=255;
+        // (0,3) yellow
+        frame[18] = 255; frame[19]=255; frame[20]=0;
+        // (1,3) yellow
+        frame[21] = 255; frame[22]=255; frame[23]=0;
+
+        let cells = proc.process_frame(&frame);
+        assert_eq!(cells.len(), 2 * 2); // term_width * term_height
+        // First terminal row cell 0 should be fg=red, bg=green
+        assert_eq!(cells[0].fg, (255,0,0));
+        assert_eq!(cells[0].bg, (0,255,0));
+        // Second terminal row cell 0 should be fg=blue, bg=yellow
+        assert_eq!(cells[2].fg, (0,0,255));
+        assert_eq!(cells[2].bg, (255,255,0));
+    }
+}

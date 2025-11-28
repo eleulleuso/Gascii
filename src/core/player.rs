@@ -52,10 +52,10 @@ pub fn play_realtime(
     }
 
     // 3. Start Video Decoder
-    println!("Initializing video decoder with target: {}x{}... fill={}", req_width, req_height, fill);
+    // println!("Initializing video decoder with target: {}x{}... fill={}", req_width, req_height, fill);
     let mut decoder = crate::core::video_decoder::VideoDecoder::new(video_path, req_width, req_height, fill)?;
     let actual_fps = decoder.get_fps();
-    println!("Video decoder started. Detected FPS: {:.2}", actual_fps);
+    // println!("Video decoder started. Detected FPS: {:.2}", actual_fps);
     
     // 4. Initialize Frame Processor (Rayon)
     let processor = crate::core::processor::FrameProcessor::new(req_width as usize, req_height as usize);
@@ -115,12 +115,12 @@ pub fn play_realtime(
     // Warn if FPS mismatch
     // Warn if FPS mismatch (only if user explicitly requested a specific FPS)
     if fps > 0 && (actual_fps - fps as f64).abs() > 0.5 {
-        println!("⚠️  FPS MISMATCH DETECTED:");
-        println!("   User requested: {}fps", fps);
-        println!("   Video actual:   {:.2}fps", actual_fps);
-        println!("   Using actual video FPS for sync");
+        // println!("⚠️  FPS MISMATCH DETECTED:");
+        // println!("   User requested: {}fps", fps);
+        // println!("   Video actual:   {:.2}fps", actual_fps);
+        // println!("   Using actual video FPS for sync");
     } else if fps == 0 {
-        println!("ℹ️  Auto-detected Video FPS: {:.2}", actual_fps);
+        // println!("ℹ️  Auto-detected Video FPS: {:.2}", actual_fps);
     }
     
     let frame_duration = Duration::from_secs_f64(1.0 / actual_fps);
@@ -207,27 +207,28 @@ pub fn play_realtime(
             frame_idx += 1;
             frames_since_report += 1;
 
-            // Report FPS and timing metrics every 2 seconds
-            if last_fps_report.elapsed() >= Duration::from_secs(2) {
-                let elapsed = last_fps_report.elapsed().as_secs_f64();
-                let fps_actual = frames_since_report as f64 / elapsed;
-                let buffer_fill = frame_buffer.fill_level();
-                let avg_drift = cumulative_drift.as_micros() / frames_since_report as u128;
-                let avg_render = frame_render_time.as_micros();
-                
-                println!("FPS: {:.1}/{:.1} | Buffer: {:.0}% | Drift: {}μs (max: {}μs) | Render: {}μs | Frame: {}", 
-                         fps_actual, actual_fps, 
-                         buffer_fill * 100.0, 
-                         avg_drift,
-                         max_drift.as_micros(),
-                         avg_render,
-                         frame_idx);
-                
-                last_fps_report = Instant::now();
-                frames_since_report = 0;
-                cumulative_drift = Duration::ZERO;
-                max_drift = Duration::ZERO;
-            }
+                // Report FPS and timing metrics every 2 seconds
+                if last_fps_report.elapsed() >= Duration::from_secs(2) {
+                    /*
+                    let elapsed = last_fps_report.elapsed().as_secs_f64();
+                    let fps_actual = frames_since_report as f64 / elapsed;
+                    let buffer_fill = frame_buffer.fill_level();
+                    let avg_drift = cumulative_drift.as_micros() / frames_since_report as u128;
+                    let avg_render = frame_render_time.as_micros();
+                    
+                    println!("FPS: {:.1}/{:.1} | Buffer: {:.0}% | Drift: {}μs (max: {}μs) | Render: {}μs | Frame: {}", 
+                             fps_actual, actual_fps, 
+                             buffer_fill * 100.0, 
+                             avg_drift,
+                             max_drift.as_micros(),
+                             avg_render,
+                             frame_idx);
+                    */
+                    last_fps_report = Instant::now();
+                    frames_since_report = 0;
+                    cumulative_drift = Duration::ZERO;
+                    max_drift = Duration::ZERO;
+                }
         } else {
             // Buffer empty - wait briefly
             thread::sleep(Duration::from_micros(500));

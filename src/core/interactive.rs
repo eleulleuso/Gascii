@@ -91,44 +91,47 @@ pub fn run_interactive_mode() -> Result<()> {
     let fill = aspect_selection == 1;
 
     // 5. Resolution / Fullscreen
-    // Note: In this Rust implementation, we rely on the terminal size.
-    // The 'Stretch' logic or specific resolution logic is handled by how we pass width/height to player.
-    
     // Get current terminal size
     let (term_cols, term_rows) = crossterm::terminal::size()?;
     
-    // We need to calculate the target pixel width/height based on the terminal size and char size.
-    // Since we are inside the Rust binary, we can try to detect char size or use defaults.
-    // For simplicity, we will use the logic similar to play.sh but in Rust.
+    // We treat the terminal as a grid of "Image Pixels".
+    // 1 Char Width = 1 Image Pixel Width
+    // 1 Char Height = 2 Image Pixel Heights (Half-block rendering)
+    // Therefore, Image Pixels are roughly square (10x10).
     
-    // Default char size
-    let char_w = 10;
-    let char_h = 20;
-    
-    let term_px_w = term_cols as u32 * char_w;
-    let term_px_h = term_rows as u32 * char_h;
+    let max_w = (term_cols as u32).saturating_sub(2);
+    let max_h = term_rows as u32 * 2;
 
-    let (mut target_w, mut target_h) = (term_px_w, term_px_h);
+    let (mut target_w, mut target_h) = (max_w, max_h);
 
-    if aspect_selection == 0 { // Fit
-        // Calculate 16:9 box within terminal
+    if aspect_selection == 0 { // Fit (16:9)
+        // Calculate 16:9 box within the available grid
         let target_ratio = 16.0 / 9.0;
-        let term_ratio = term_px_w as f64 / term_px_h as f64;
+        let current_ratio = max_w as f64 / max_h as f64;
         
-        if term_ratio > target_ratio {
-            // Terminal is wider, limit by height
-            target_w = (term_px_h as f64 * target_ratio) as u32;
+        if current_ratio > target_ratio {
+            // Terminal is wider than 16:9 -> Limit by height
+            // Height = Max Height
+            // Width = Height * 16/9
+            target_h = max_h;
+            target_w = (max_h as f64 * target_ratio) as u32;
         } else {
-            // Terminal is taller, limit by width
-            target_h = (term_px_w as f64 / target_ratio) as u32;
+            // Terminal is taller/narrower than 16:9 -> Limit by width
+            // Width = Max Width
+            // Height = Width * 9/16
+            target_w = max_w;
+            target_h = (max_w as f64 / target_ratio) as u32;
         }
-    } else if aspect_selection == 2 { // Stretch
-         // Just use full terminal size, the player will stretch the video to it
-         // target_w and target_h are already set to term_px_w/h
+    } else {
+        // Fill (1) or Stretch (2)
+        // Use full available terminal space
+        // Fill mode logic in player.rs will handle cropping if needed
+        // Stretch mode will just stretch to this size
+        target_w = max_w;
+        target_h = max_h;
     }
-    // Fill mode (1) also uses full terminal size, but the player logic handles the cropping.
 
-    // Ensure even dimensions
+    // Ensure even dimensions for half-block rendering
     if target_w % 2 != 0 { target_w -= 1; }
     if target_h % 2 != 0 { target_h -= 1; }
 

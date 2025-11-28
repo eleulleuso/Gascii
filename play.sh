@@ -14,6 +14,15 @@ if ! command -v cargo &> /dev/null; then
     exit 1
 fi
 
+# macOS Font Resizing (AppleScript)
+if [[ "$(uname)" == "Darwin" ]]; then
+    osascript -e '
+    tell application "Terminal"
+        set font size of window 1 to 2.5
+    end tell
+    ' 2>/dev/null || true
+fi
+
 # Build and Run in one go
 # We use --release for performance
 # We pass 'interactive' to trigger the new menu mode

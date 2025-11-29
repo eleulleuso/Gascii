@@ -18,7 +18,7 @@ pub enum DisplayMode {
 
 pub struct DisplayManager {
     stdout: BufWriter<Stdout>,
-    mode: DisplayMode,
+    _mode: DisplayMode,
     last_cells: Option<Vec<CellData>>,
     render_buffer: Vec<u8>,
 }
@@ -29,9 +29,9 @@ impl DisplayManager {
         let stdout = BufWriter::with_capacity(128 * 1024, std::io::stdout());
         let mut dm = Self {
             stdout,
-            mode,
+            _mode: mode,
             last_cells: None,
-            render_buffer: Vec::with_capacity(1024 * 1024), // Pre-allocate 1MB for 4K rendering
+            render_buffer: Vec::with_capacity(1024 * 1024), // Pre-allocate 1MB buffer
         };
         
         dm.initialize_terminal()?;
@@ -62,10 +62,6 @@ impl DisplayManager {
     }
 
 
-    pub fn render_frame(&mut self, _frame_data: &[u8]) -> Result<()> {
-        // Legacy method, no longer used.
-        Ok(())
-    }
 
     /// Return terminal size in character columns and rows, converting from pixels when needed.
     pub fn terminal_size_chars(&self) -> Result<(u16, u16)> {
@@ -94,7 +90,7 @@ impl DisplayManager {
         let mut force_redraw = false;
         if self.last_cells.as_ref().map(|v| v.len()).unwrap_or(0) != cells.len() {
             self.stdout.queue(crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
-            self.last_cells = Some(vec![CellData { char: ' ', fg: 16, bg: 16 }; cells.len()]);
+            self.last_cells = Some(vec![CellData { char: ' ', fg: (0,0,0), bg: (0,0,0) }; cells.len()]);
             force_redraw = true;
         }
 
@@ -107,8 +103,8 @@ impl DisplayManager {
         self.render_buffer.clear();
         let buffer = &mut self.render_buffer;
         
-        let mut last_fg: Option<u8> = None;
-        let mut last_bg: Option<u8> = None;
+        let mut last_fg: Option<(u8, u8, u8)> = None;
+        let mut last_bg: Option<(u8, u8, u8)> = None;
         
         // Calculate centering offsets dynamically
         let (mut term_cols, mut term_rows) = terminal::size().unwrap_or((80, 24));
@@ -175,16 +171,26 @@ impl DisplayManager {
                     cursor_y = target_y as i32;
                 }
                 
-                // Color updates with ANSI 256-color format
+                // Color updates with TrueColor (RGB) format
+                // FG: \x1b[38;2;R;G;Bm
                 if Some(cell.fg) != last_fg {
-                    buffer.extend_from_slice(b"\x1b[38;5;");
-                    buffer.extend_from_slice(cell.fg.to_string().as_bytes());
+                    buffer.extend_from_slice(b"\x1b[38;2;");
+                    buffer.extend_from_slice(cell.fg.0.to_string().as_bytes());
+                    buffer.extend_from_slice(b";");
+                    buffer.extend_from_slice(cell.fg.1.to_string().as_bytes());
+                    buffer.extend_from_slice(b";");
+                    buffer.extend_from_slice(cell.fg.2.to_string().as_bytes());
                     buffer.push(b'm');
                     last_fg = Some(cell.fg);
                 }
+                // BG: \x1b[48;2;R;G;Bm
                 if Some(cell.bg) != last_bg {
-                    buffer.extend_from_slice(b"\x1b[48;5;");
-                    buffer.extend_from_slice(cell.bg.to_string().as_bytes());
+                    buffer.extend_from_slice(b"\x1b[48;2;");
+                    buffer.extend_from_slice(cell.bg.0.to_string().as_bytes());
+                    buffer.extend_from_slice(b";");
+                    buffer.extend_from_slice(cell.bg.1.to_string().as_bytes());
+                    buffer.extend_from_slice(b";");
+                    buffer.extend_from_slice(cell.bg.2.to_string().as_bytes());
                     buffer.push(b'm');
                     last_bg = Some(cell.bg);
                 }
@@ -228,62 +234,6 @@ impl DisplayManager {
         
         Ok(())
     }
-
-    /// Generate the render buffer without writing to stdout. Useful for testing.
-    pub fn render_buffer_for(&mut self, cells: &[CellData], width: usize) -> Result<Vec<u8>> {
-        self.render_buffer.clear();
-        // Track last color to avoid redundant escape sequences
-        let buffer = &mut self.render_buffer;
-        let mut last_fg: Option<u8> = None;
-        let mut last_bg: Option<u8> = None;
-
-        let (term_cols, term_rows) = terminal::size().unwrap_or((80, 24));
-        let content_width = width as u16;
-        let content_height = (cells.len() / width) as u16;
-        let offset_x = if term_cols > content_width { (term_cols - content_width) / 2 } else { 0 };
-        let offset_y = if term_rows > content_height { (term_rows - content_height) / 2 } else { 0 };
-
-        let mut cursor_x: i32 = -1;
-        let mut cursor_y: i32 = -1;
-
-        for (i, cell) in cells.iter().enumerate() {
-            let x = (i % width) as u16;
-            let y = (i / width) as u16;
-            let target_x = x + offset_x;
-            let target_y = y + offset_y;
-            if target_x >= term_cols || target_y >= term_rows {
-                cursor_x = -1;
-                continue;
-            }
-            if cursor_x != target_x as i32 || cursor_y != target_y as i32 {
-                buffer.extend_from_slice(b"\x1b[");
-                buffer.extend_from_slice((target_y + 1).to_string().as_bytes());
-                buffer.extend_from_slice(b";");
-                buffer.extend_from_slice((target_x + 1).to_string().as_bytes());
-                buffer.extend_from_slice(b"H");
-                cursor_x = target_x as i32;
-                cursor_y = target_y as i32;
-            }
-            if Some(cell.fg) != last_fg {
-                buffer.extend_from_slice(b"\x1b[38;5;");
-                buffer.extend_from_slice(cell.fg.to_string().as_bytes());
-                buffer.push(b'm');
-                last_fg = Some(cell.fg);
-            }
-            if Some(cell.bg) != last_bg {
-                buffer.extend_from_slice(b"\x1b[48;5;");
-                buffer.extend_from_slice(cell.bg.to_string().as_bytes());
-                buffer.push(b'm');
-                last_bg = Some(cell.bg);
-            }
-            let mut b_dst = [0u8; 4];
-            buffer.extend_from_slice(cell.char.encode_utf8(&mut b_dst).as_bytes());
-            cursor_x += 1;
-        }
-
-        buffer.extend_from_slice(b"\x1b[0m");
-        Ok(buffer.clone())
-    }
 }
 
 impl Drop for DisplayManager {
@@ -294,26 +244,3 @@ impl Drop for DisplayManager {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::processor::CellData;
-
-    #[test]
-    fn test_render_buffer_for_simple() {
-        let mut dm = DisplayManager::new(DisplayMode::Rgb).unwrap();
-        // Make small 2x2 image (term_width 2 -> cells=4)
-        let cells = vec![
-            CellData{ char: 'A', fg: 196, bg: 16 }, // Red on Black
-            CellData{ char: 'B', fg: 196, bg: 16 },
-            CellData{ char: 'C', fg: 46, bg: 16 },  // Green on Black
-            CellData{ char: 'D', fg: 46, bg: 16 },
-        ];
-
-        let buf = dm.render_buffer_for(&cells, 2).unwrap();
-        let s = String::from_utf8_lossy(&buf);
-        // Expect to find 256-color codes
-        assert!(s.contains("38;5;"));
-        assert!(s.contains("A") || s.contains("B") || s.contains("C") || s.contains("D"));
-    }
-}

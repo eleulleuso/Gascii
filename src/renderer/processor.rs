@@ -1,19 +1,5 @@
 use rayon::prelude::*;
 use super::cell::CellData;
-use super::quantizer::ColorQuantizer;
-
-// 8x8 Bayer Matrix for Ordered Dithering
-// Values are 0..63
-const BAYER_8X8: [u8; 64] = [
-    0, 32,  8, 40,  2, 34, 10, 42,
-    48, 16, 56, 24, 50, 18, 58, 26,
-    12, 44,  4, 36, 14, 46,  6, 38,
-    60, 28, 52, 20, 62, 30, 54, 22,
-    3, 35, 11, 43,  1, 33,  9, 41,
-    51, 19, 59, 27, 49, 17, 57, 25,
-    15, 47,  7, 39, 13, 45,  5, 37,
-    63, 31, 55, 23, 61, 29, 53, 21,
-];
 
 pub struct FrameProcessor {
     pub width: usize,
@@ -26,7 +12,7 @@ impl FrameProcessor {
     }
 
     pub fn process_frame(&self, pixel_data: &[u8]) -> Vec<CellData> {
-        let mut cells = vec![CellData { char: ' ', fg: 0, bg: 0 }; self.width * (self.height / 2)];
+        let mut cells = vec![CellData { char: ' ', fg: (0,0,0), bg: (0,0,0) }; self.width * (self.height / 2)];
         self.process_frame_into(pixel_data, &mut cells);
         cells
     }
@@ -38,13 +24,10 @@ impl FrameProcessor {
 
         // Ensure cells buffer is correct size
         if cells.len() != w * term_height {
-            // In a real scenario, we might want to resize or error out.
-            // For now, we assume the caller provides the correct size.
             return;
         }
 
         // Parallel processing using Rayon
-        // We use a chunk size that balances load balancing with overhead.
         let chunk_size = if w * term_height > 10000 { 
             2000 
         } else { 
@@ -69,46 +52,27 @@ impl FrameProcessor {
                     let py_top = cy * 2;
                     let py_bottom = cy * 2 + 1;
 
-                    // Helper to get pixel color safely with dithering
-                    let get_pixel_dithered = |x: usize, y: usize| -> (u8, u8, u8) {
+                    // Helper to get pixel color safely
+                    let get_pixel = |x: usize, y: usize| -> (u8, u8, u8) {
                         let offset = (y * w + x) * 3;
                         if offset + 2 < pixel_data.len() {
-                            let r = pixel_data[offset];
-                            let g = pixel_data[offset + 1];
-                            let b = pixel_data[offset + 2];
-                            
-                            // Apply Ordered Dithering
-                            // Threshold from Bayer Matrix (0..63)
-                            let threshold = BAYER_8X8[(y % 8) * 8 + (x % 8)];
-                            
-                            // Normalize threshold to -0.5 to 0.5 range (approx) 
-                            // and scale by spread factor.
-                            // Factor 32.0 means the noise spreads across +/- 16 values.
-                            // This is enough to bridge the gap between 256 colors.
-                            let spread = 32.0;
-                            let adjustment = (threshold as f32 - 31.5) / 63.0 * spread;
-                            
-                            let r_d = (r as f32 + adjustment).clamp(0.0, 255.0) as u8;
-                            let g_d = (g as f32 + adjustment).clamp(0.0, 255.0) as u8;
-                            let b_d = (b as f32 + adjustment).clamp(0.0, 255.0) as u8;
-                            
-                            (r_d, g_d, b_d)
+                            (
+                                pixel_data[offset],
+                                pixel_data[offset + 1],
+                                pixel_data[offset + 2]
+                            )
                         } else {
                             (0, 0, 0)
                         }
                     };
 
-                    let top_color = get_pixel_dithered(cx, py_top);
-                    let bottom_color = get_pixel_dithered(cx, py_bottom);
-
-                    // Quantize RGB to ANSI 256 colors
-                    let fg_idx = ColorQuantizer::quantize_rgb(top_color.0, top_color.1, top_color.2);
-                    let bg_idx = ColorQuantizer::quantize_rgb(bottom_color.0, bottom_color.1, bottom_color.2);
+                    let top_color = get_pixel(cx, py_top);
+                    let bottom_color = get_pixel(cx, py_bottom);
 
                     *cell = CellData {
                         char: '▀', // Upper Half Block
-                        fg: fg_idx,
-                        bg: bg_idx,
+                        fg: top_color,
+                        bg: bottom_color,
                     };
                 }
             });
@@ -147,20 +111,11 @@ mod tests {
         let cells = proc.process_frame(&frame);
         assert_eq!(cells.len(), 2 * 2); // term_width * term_height
         
-        // Expected quantized colors
-        // Note: Dithering might slightly alter values, but for pure colors (255,0,0) it should map to the primary color index
-        // Red (255,0,0) -> Index 196 (in 6x6x6 cube) or 9 (bright red) depending on quantization logic.
-        // Let's use the quantizer to get expected values.
-        let expected_red = ColorQuantizer::quantize_rgb(255, 0, 0);
-        let expected_green = ColorQuantizer::quantize_rgb(0, 255, 0);
-        let expected_blue = ColorQuantizer::quantize_rgb(0, 0, 255);
-        let expected_yellow = ColorQuantizer::quantize_rgb(255, 255, 0);
-
         // First terminal row cell 0 should be fg=red, bg=green
-        assert_eq!(cells[0].fg, expected_red);
-        assert_eq!(cells[0].bg, expected_green);
+        assert_eq!(cells[0].fg, (255,0,0));
+        assert_eq!(cells[0].bg, (0,255,0));
         // Second terminal row cell 0 should be fg=blue, bg=yellow
-        assert_eq!(cells[2].fg, expected_blue);
-        assert_eq!(cells[2].bg, expected_yellow);
+        assert_eq!(cells[2].fg, (0,0,255));
+        assert_eq!(cells[2].bg, (255,255,0));
     }
 }

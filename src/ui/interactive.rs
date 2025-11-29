@@ -1,171 +1,71 @@
-use anyhow::{Result, Context};
-use dialoguer::{theme::ColorfulTheme, Select};
+use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::fs;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyModifiers},
-    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
-    ExecutableCommand,
+    event::{self, Event, KeyCode},
 };
-use std::io::stdout;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 // Direct module imports
 use crate::renderer::{DisplayManager, DisplayMode, FrameProcessor};
+use crate::renderer::cell::CellData;
 use crate::decoder::VideoDecoder;
 use crate::audio::AudioPlayer;
-use crate::sync::{MasterClock, VSync};
+use crate::sync::MasterClock;
 
 /// 디버그 로그 파일에 메시지를 기록합니다.
-#[cfg(target_os = "macos")]
-fn write_debug_log(message: &str) {
-    use std::io::Write;
-    let mut log_path = std::env::current_dir().unwrap_or_default();
-    log_path.push("debug.log");
-    
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path) 
-    {
-        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-        let _ = writeln!(file, "[{}] {}", timestamp, message);
-    }
-}
 
-pub fn run_interactive_mode() -> Result<()> {
-    // 1. Video Selection
-    let video_dir = Path::new("assets/vidio");
-    if !video_dir.exists() {
-        fs::create_dir_all(video_dir)?;
-    }
-    
-    let mut videos: Vec<PathBuf> = fs::read_dir(video_dir)?
-        .filter_map(|entry| entry.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "mp4" || ext == "mkv" || ext == "avi"))
-        .collect();
-    
-    videos.sort();
-
-    if videos.is_empty() {
-        println!("❌ 'assets/vidio' 폴더에 비디오 파일이 없습니다.");
-        return Ok(());
-    }
-
-    let video_names: Vec<String> = videos.iter()
-        .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
-        .collect();
-
-    let selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("비디오 선택")
-        .default(0)
-        .items(&video_names)
-        .interact()?;
-
-    let selected_video = &videos[selection];
-
-    // 2. Audio Selection
-    let audio_dir = Path::new("assets/audio");
-    if !audio_dir.exists() {
-        fs::create_dir_all(audio_dir)?;
-    }
-
-    let mut audios: Vec<PathBuf> = fs::read_dir(audio_dir)?
-        .filter_map(|entry| entry.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().map_or(false, |ext| ext == "mp3" || ext == "wav"))
-        .collect();
-    
-    audios.sort();
-
-    let mut audio_options = vec!["오디오 없음 / 자동 추출".to_string()];
-    audio_options.extend(audios.iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()));
-
-    let audio_selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("오디오 선택")
-        .default(0)
-        .items(&audio_options)
-        .interact()?;
-
-    let selected_audio = if audio_selection == 0 {
-        None
-    } else {
-        Some(&audios[audio_selection - 1])
+pub fn run_game(
+    video_path: PathBuf,
+    audio_path: Option<PathBuf>,
+    mode: DisplayMode,
+    fill_screen: bool
+) -> Result<()> {
+    // 1. Terminal Setup
+    let (terminal_w, terminal_h) = {
+        let size = crossterm::terminal::size()?;
+        (size.0 as u32, size.1 as u32)
     };
 
-    // 3. Render Mode
-    let modes = vec!["RGB 컬러 모드 (추천)", "ASCII 텍스트 모드"];
-    let mode_selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("렌더링 모드 선택")
-        .default(0)
-        .items(&modes)
-        .interact()?;
-
-    let mode = if mode_selection == 0 { DisplayMode::Rgb } else { DisplayMode::Ascii };
-
-    // 4. Aspect Ratio Mode
-    let aspect_modes = vec![
-        "Fit (16:9) - 화면 비율 16:9로 고정",
-        "Fill (전체화면) - 터미널 화면 꽉 채우기",
-    ];
-    let aspect_selection = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("화면 비율 모드 선택")
-        .default(0)
-        .items(&aspect_modes)
-        .interact()?;
-    
-    let fill = aspect_selection == 1;
-
-    // 5. Resolution Calculation
-    let (term_cols, term_rows) = crossterm::terminal::size()?;
-    println!("ℹ️  Terminal size for rendering: {}x{}", term_cols, term_rows);
-    #[cfg(target_os = "macos")]
-    write_debug_log(&format!("Terminal size: {}x{}", term_cols, term_rows));
-    
-    let (target_w, target_h) = if fill {
-        // Fill (전체화면): 터미널 전체 사용
-        let w = (term_cols as u32).saturating_sub(2);
-        let h = term_rows as u32 * 2; // Pixel height (2x for half-block)
-        (w, h)
+    // Calculate target dimensions
+    // We want 16:9 aspect ratio if not filling screen
+    let (target_w, target_h) = if fill_screen {
+        (terminal_w, terminal_h)
     } else {
-        // Fit (16:9): 16:9 비율로 고정, 레터박스
-        let terminal_w = term_cols as f64;
-        let terminal_h = term_rows as f64 * 2.0; // Pixel height
-        
-        // 16:9 비율
         let target_ratio = 16.0 / 9.0;
-        let terminal_ratio = terminal_w / terminal_h;
+        let terminal_ratio = terminal_w as f32 / terminal_h as f32;
         
         let (w, h) = if terminal_ratio > target_ratio {
-            // 터미널이 더 넓음 → 높이 기준으로 맞춤
+            // Terminal is wider -> fit to height
             let h = terminal_h;
-            let w = h * target_ratio;
-            (w as u32, h as u32)
+            let w = (h as f32 * target_ratio) as u32;
+            (w, h)
         } else {
-            // 터미널이 더 좁음 → 너비 기준으로 맞춤
+            // Terminal is taller -> fit to width
             let w = terminal_w;
-            let h = w / target_ratio;
-            (w as u32, h as u32)
+            let h = (w as f32 / target_ratio) as u32;
+            (w, h)
         };
-        
         (w.saturating_sub(2), h)
     };
 
     println!("\n🚀 재생 시작: {} ({}x{} 픽셀, {})", 
-        selected_video.file_name().unwrap().to_string_lossy(),
+        video_path.file_name().unwrap().to_string_lossy(),
         target_w, target_h,
-        if fill { "전체화면" } else { "16:9" }
+        if fill_screen { "전체화면" } else { "16:9" }
     );
 
     // Audio extraction logic if needed
-    let mut final_audio_path: Option<String> = selected_audio.map(|p| p.to_string_lossy().to_string());
+    let mut final_audio_path: Option<String> = audio_path.map(|p| p.to_string_lossy().to_string());
     
+    // If audio not provided, try to find extracted audio or extract it
     if final_audio_path.is_none() {
-        // Try to find extracted audio or extract it
-        let video_stem = selected_video.file_stem().unwrap().to_string_lossy();
+        let audio_dir = Path::new("assets/audio");
+        if !audio_dir.exists() {
+            fs::create_dir_all(audio_dir)?;
+        }
+
+        let video_stem = video_path.file_stem().unwrap().to_string_lossy();
         let extracted_path = audio_dir.join(format!("{}_extracted.mp3", video_stem));
         
         if extracted_path.exists() {
@@ -174,7 +74,7 @@ pub fn run_interactive_mode() -> Result<()> {
             println!("ℹ️  오디오 추출 중...");
             // Call ffmpeg
             let status = std::process::Command::new("ffmpeg")
-                .arg("-i").arg(selected_video)
+                .arg("-i").arg(&video_path)
                 .arg("-vn")
                 .arg("-acodec").arg("libmp3lame")
                 .arg("-q:a").arg("2")
@@ -203,11 +103,15 @@ pub fn run_interactive_mode() -> Result<()> {
     let mut display = DisplayManager::new(mode)?;
 
     // Create video decoder
+    // IMPORTANT: We use Half-Block rendering, so vertical resolution is 2x terminal rows
+    let pixel_w = target_w;
+    let pixel_h = target_h * 2;
+    
     let decoder = VideoDecoder::new(
-        &selected_video.to_string_lossy(),
-        target_w,
-        target_h,
-        fill
+        &video_path.to_string_lossy(),
+        pixel_w,
+        pixel_h,
+        fill_screen
     )?;
     
     let fps = decoder.get_fps();
@@ -222,10 +126,14 @@ pub fn run_interactive_mode() -> Result<()> {
     let clock = MasterClock::new();
     
     // Frame processor (expects pixel width and height)
-    let processor = FrameProcessor::new(target_w as usize, target_h as usize);
+    let processor = FrameProcessor::new(pixel_w as usize, pixel_h as usize);
     
-    // Reusable buffer
-    let mut cell_buffer = Vec::new();
+    // Reusable buffer (pre-allocate with correct size for half-block rendering)
+    let term_height = (pixel_h / 2) as usize;
+    let mut cell_buffer = vec![CellData { char: ' ', fg: (0,0,0), bg: (0,0,0) }; pixel_w as usize * term_height];
+    
+    crate::utils::logger::debug(&format!("Initialized cell buffer: {}x{} terminal = {} cells", 
+        pixel_w, term_height, cell_buffer.len()));
     
     // Performance tracking
     let start_time = std::time::Instant::now();
@@ -242,11 +150,24 @@ pub fn run_interactive_mode() -> Result<()> {
     
     crate::utils::logger::debug("Starting render loop");
     
-    for frame_data in frame_receiver {
-        let frame_start = std::time::Instant::now();
+    loop {
+        // Input
+        if event::poll(Duration::from_millis(0))? {
+            if let Event::Key(key) = event::read()? {
+                if key.code == KeyCode::Char('q') || key.code == KeyCode::Esc {
+                    break;
+                }
+            }
+        }
         
-        // Calculate when THIS frame should be displayed
-        let expected_time = frame_duration * frame_idx as u32;
+        // Receive frame
+        let frame_data = match frame_receiver.recv() {
+            Ok(f) => f,
+            Err(_) => break, // Channel closed (EOF)
+        };
+        
+        // Sync Logic
+        let expected_time = frame_duration.mul_f64(frame_idx as f64);
         let elapsed = clock.elapsed();
         
         // Adaptive threshold based on recent performance
@@ -274,12 +195,20 @@ pub fn run_interactive_mode() -> Result<()> {
         }
         
         // Process frame
+        if frame_idx % 60 == 0 {
+            crate::utils::logger::debug(&format!("Frame {}: buffer_len={}, processing...", 
+                frame_idx, frame_data.buffer.len()));
+        }
         processor.process_frame_into(&frame_data.buffer, &mut cell_buffer);
         
         // Render
         if let Err(e) = display.render_diff(&cell_buffer, target_w as usize) {
             crate::utils::logger::error(&format!("Render error: {}", e));
             return Err(e);
+        }
+        
+        if frame_idx % 60 == 0 {
+            crate::utils::logger::debug(&format!("Frame {} rendered successfully", frame_idx));
         }
         
         // Start audio AFTER first frame is rendered (for sync)
@@ -298,15 +227,17 @@ pub fn run_interactive_mode() -> Result<()> {
         }
         
         // Update moving average frame time
-        let current_frame_time = frame_start.elapsed();
-        avg_frame_time = std::time::Duration::from_secs_f64(
-            avg_frame_time.as_secs_f64() * (1.0 - EWMA_ALPHA) 
-            + current_frame_time.as_secs_f64() * EWMA_ALPHA
+        let frame_end = clock.elapsed();
+        let frame_time = frame_end - elapsed;
+        avg_frame_time = Duration::from_secs_f64(
+            avg_frame_time.as_secs_f64() * (1.0 - EWMA_ALPHA) + 
+            frame_time.as_secs_f64() * EWMA_ALPHA
         );
         
         frame_idx += 1;
     }
     
+    // Cleanup
     crate::utils::logger::debug(&format!("Render loop ended. Frames: {}, Dropped: {}", frame_idx, frames_dropped));
     
     // Wait for decoder thread
@@ -324,3 +255,4 @@ pub fn run_interactive_mode() -> Result<()> {
 
     Ok(())
 }
+    

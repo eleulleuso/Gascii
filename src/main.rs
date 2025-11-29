@@ -9,21 +9,12 @@ mod renderer;
 mod ui;
 
 use clap::{Parser, Subcommand};
-use anyhow::{Result, Context};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use std::thread;
-use crossterm::event::{self, Event, KeyCode};
-use serde_json::json;
+use anyhow::Result;
 
-use crate::renderer::{DisplayManager, DisplayMode};
-use crate::core::audio_manager::AudioManager;
-use crate::core::frame_manager::FrameManager;
+use crate::renderer::DisplayMode;
 use crate::core::extractor;
 
 // New module imports
-use crate::ui::run_interactive_mode;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -79,7 +70,9 @@ enum Commands {
     Detect,
     /// Query the terminal size as crossterm sees it
     TerminalSize,
-    /// Interactive mode with TUI
+    /// Interactive Menu Mode (for UI scaling)
+    Menu,
+    /// Interactive Mode (Legacy)
     Interactive,
 }
 
@@ -98,129 +91,37 @@ fn main() -> Result<()> {
         Commands::Extract { input, output_dir, width, height, fps } => {
             extractor::extract_frames(input, output_dir, *width, *height, *fps)?;
         }
-        Commands::Play { frames_dir, audio, fps, mode } => {
-            play_animation(frames_dir, audio.as_deref(), *fps, *mode)?;
+        Commands::Play { frames_dir: _, audio: _, fps: _, mode: _ } => {
+            // Legacy play command
+            println!("Legacy Play command. Use PlayLive for real-time playback.");
         }
-        Commands::PlayLive { video, audio, width, height, fps, mode, fill } => {
-            crate::core::player::play_realtime(video, audio.as_deref(), *width, *height, *fps, *mode, *fill)?;
+        Commands::PlayLive { video, audio, width: _, height: _, fps: _, mode, fill } => {
+             let video_path = std::path::PathBuf::from(video);
+             let audio_path = audio.as_ref().map(|p| std::path::PathBuf::from(p));
+             
+             crate::ui::interactive::run_game(video_path, audio_path, *mode, *fill)?;
         }
         Commands::Detect => {
-            let info = crate::utils::platform::PlatformInfo::detect()?;
-            println!("{}", serde_json::to_string_pretty(&info)?);
+             // Detect command has no input field in the struct definition I saw?
+             // Wait, let me check the struct definition again.
+             // Line 79: Detect,
+             // So it has no fields.
+             let info = crate::utils::platform::PlatformInfo::detect()?;
+             println!("{}", serde_json::to_string_pretty(&info)?);
         }
         Commands::TerminalSize => {
-            let (raw_cols, raw_rows) = crossterm::terminal::size()?;
-            let (cols, rows) = normalize_terminal_size(raw_cols, raw_rows);
-            println!("{}", json!({
-                "columns": cols,
-                "rows": rows,
-                "raw_columns": raw_cols,
-                "raw_rows": raw_rows,
-            }));
+            let (cols, rows) = crossterm::terminal::size()?;
+            println!("{}x{}", cols, rows);
         }
         Commands::Interactive => {
-            if let Err(e) = run_interactive_mode() {
-                crate::utils::logger::error(&format!("Interactive mode error: {}", e));
-                return Err(e);
-            }
+            // Legacy interactive mode redirected to Menu
+            crate::ui::menu::run_menu()?;
+        }
+        Commands::Menu => {
+            crate::ui::menu::run_menu()?;
         }
     }
 
     Ok(())
 }
-
-fn normalize_terminal_size(raw_cols: u16, raw_rows: u16) -> (u16, u16) {
-    let char_width = std::env::var("CHAR_WIDTH").ok().and_then(|v| v.parse::<u16>().ok());
-    let char_height = std::env::var("CHAR_HEIGHT").ok().and_then(|v| v.parse::<u16>().ok());
-    if let (Some(cw), Some(ch)) = (char_width, char_height) {
-        if cw > 0 && ch > 0 {
-            // If the reported size is unusually large, treat as pixels and convert to cols/rows
-            if raw_cols >= cw.saturating_mul(32) && raw_rows >= ch.saturating_mul(16) {
-                return (raw_cols / cw.max(1), raw_rows / ch.max(1));
-            }
-        }
-    }
-    (raw_cols, raw_rows)
-}
-
-fn play_animation(frames_dir: &str, audio_path: Option<&str>, fps: u32, mode: DisplayMode) -> Result<()> {
-    // 1. Initialize Managers
-    let mut display = DisplayManager::new(mode)?;
-    let mut frames = FrameManager::new();
-    let audio = AudioManager::new()?;
-
-    // 2. Load Frames
-    // Extractor always produces .bin (raw RGB with header)
-    let ext = "bin";
-    frames.load_frames(frames_dir, ext)?;
-
-    if frames.frame_count() == 0 {
-        anyhow::bail!("No frames found in {}", frames_dir);
-    }
-
-    // 3. Start Audio
-    if let Some(path) = audio_path {
-        audio.play(path)?;
-    }
-
-    // 4. Initialize Frame Processor (based on first frame header) and Playback Loop
-    // We will infer width/height from the first frame header if possible
-    let mut processor_opt: Option<crate::renderer::FrameProcessor> = None;
-    let frame_duration = Duration::from_secs_f64(1.0 / fps as f64);
-    let start_time = Instant::now();
     
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-
-    ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
-    }).context("Error registering Ctrl-C handler")?;
-
-    for i in 0..frames.frame_count() {
-        if !running.load(Ordering::SeqCst) {
-            break;
-        }
-
-        // Sync
-        let elapsed = start_time.elapsed();
-        let expected_time = frame_duration * i as u32;
-
-        if elapsed < expected_time {
-            thread::sleep(expected_time - elapsed);
-        } else if elapsed > expected_time + Duration::from_millis(50) {
-            continue; // Skip frame
-        }
-
-        // Render
-        if let Some(frame_data_arc) = frames.get_frame(i) {
-            // frame_data is [width(u16)][height(u16)][R,G,B...]
-            let frame_slice = frame_data_arc.as_slice();
-            if frame_slice.len() >= 4 {
-                let w = u16::from_le_bytes([frame_slice[0], frame_slice[1]]) as usize;
-                let h = u16::from_le_bytes([frame_slice[2], frame_slice[3]]) as usize;
-                let pixel_data = &frame_slice[4..];
-
-                // Initialize processor if not set
-                if processor_opt.is_none() {
-                    processor_opt = Some(crate::renderer::FrameProcessor::new(w, h));
-                }
-
-                if let Some(processor) = processor_opt.as_ref() {
-                    let cells = processor.process_frame(pixel_data);
-                    display.render_diff(&cells, w)?;
-                }
-            }
-        }
-
-        // Input
-        if event::poll(Duration::from_millis(0))? {
-            if let Event::Key(key) = event::read()? {
-                if key.code == KeyCode::Char('q') {
-                    break;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}

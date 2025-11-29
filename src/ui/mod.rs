@@ -1,3 +1,3 @@
 pub mod interactive;
+pub mod menu;
 
-pub use interactive::run_interactive_mode;

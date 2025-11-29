@@ -99,9 +99,8 @@ pub fn run_interactive_mode() -> Result<()> {
 
     // 4. Aspect Ratio Mode
     let aspect_modes = vec![
-        "Fit (레터박스) - 원본 비율 유지 (검은 여백)",
-        "Fill (꽉 찬 화면) - 화면 채우기 (가장자리 잘림)",
-        "Stretch (늘리기) - 화면에 맞게 늘리기"
+        "Fit (16:9) - 화면 비율 16:9로 고정",
+        "Fill (전체화면) - 터미널 화면 꽉 채우기",
     ];
     let aspect_selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("화면 비율 모드 선택")
@@ -111,25 +110,45 @@ pub fn run_interactive_mode() -> Result<()> {
     
     let fill = aspect_selection == 1;
 
-    // 5. Resolution / Fullscreen
-    // Get current terminal size
+    // 5. Resolution Calculation
     let (term_cols, term_rows) = crossterm::terminal::size()?;
     println!("ℹ️  Terminal size for rendering: {}x{}", term_cols, term_rows);
     #[cfg(target_os = "macos")]
     write_debug_log(&format!("Terminal size: {}x{}", term_cols, term_rows));
     
-    // We treat the terminal as a grid of "Image Pixels".
-    // 1 Char Width = 1 Image Pixel Width
-    // 1 Char Height = 2 Image Pixel Heights (Half-block rendering)
-    // Therefore, Image Pixels are roughly square (10x10).
-    
-    // Use full terminal size (minus small margin for safety)
-    let target_w = (term_cols as u32).saturating_sub(2);
-    let target_h = term_rows as u32 * 2; // Pixel height (2x terminal rows for half-block)
+    let (target_w, target_h) = if fill {
+        // Fill (전체화면): 터미널 전체 사용
+        let w = (term_cols as u32).saturating_sub(2);
+        let h = term_rows as u32 * 2; // Pixel height (2x for half-block)
+        (w, h)
+    } else {
+        // Fit (16:9): 16:9 비율로 고정, 레터박스
+        let terminal_w = term_cols as f64;
+        let terminal_h = term_rows as f64 * 2.0; // Pixel height
+        
+        // 16:9 비율
+        let target_ratio = 16.0 / 9.0;
+        let terminal_ratio = terminal_w / terminal_h;
+        
+        let (w, h) = if terminal_ratio > target_ratio {
+            // 터미널이 더 넓음 → 높이 기준으로 맞춤
+            let h = terminal_h;
+            let w = h * target_ratio;
+            (w as u32, h as u32)
+        } else {
+            // 터미널이 더 좁음 → 너비 기준으로 맞춤
+            let w = terminal_w;
+            let h = w / target_ratio;
+            (w as u32, h as u32)
+        };
+        
+        (w.saturating_sub(2), h)
+    };
 
-    println!("\n🚀 재생 시작: {} ({}x{} 픽셀)", 
+    println!("\n🚀 재생 시작: {} ({}x{} 픽셀, {})", 
         selected_video.file_name().unwrap().to_string_lossy(),
-        target_w, target_h
+        target_w, target_h,
+        if fill { "전체화면" } else { "16:9" }
     );
 
     // Audio extraction logic if needed

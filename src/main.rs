@@ -84,6 +84,14 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // 1. Initialize Logger (error.log)
+    crate::utils::logger::init("error.log");
+    
+    // 2. Reset Terminal State (Fix "Staircase" issue from previous crashes)
+    // We ignore errors here because the terminal might not be in raw mode
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen);
+
     let cli = Cli::parse();
 
     match &cli.command {
@@ -111,7 +119,10 @@ fn main() -> Result<()> {
             }));
         }
         Commands::Interactive => {
-            run_interactive_mode()?;
+            if let Err(e) = run_interactive_mode() {
+                crate::utils::logger::error(&format!("Interactive mode error: {}", e));
+                return Err(e);
+            }
         }
     }
 

@@ -240,7 +240,7 @@ pub fn run_interactive_mode() -> Result<()> {
     let mut frames_dropped = 0u64;
     let mut audio_player = None; // Will start after first frame
     
-    println!("DEBUG: Starting render loop");
+    crate::utils::logger::debug("Starting render loop");
     
     for frame_data in frame_receiver {
         let frame_start = std::time::Instant::now();
@@ -278,7 +278,7 @@ pub fn run_interactive_mode() -> Result<()> {
         
         // Render
         if let Err(e) = display.render_diff(&cell_buffer, target_w as usize) {
-            println!("DEBUG: Render error: {}", e);
+            crate::utils::logger::error(&format!("Render error: {}", e));
             return Err(e);
         }
         
@@ -287,11 +287,11 @@ pub fn run_interactive_mode() -> Result<()> {
             if let Some(audio_path) = final_audio_path.as_ref() {
                 match AudioPlayer::new(audio_path) {
                     Ok(player) => {
-                        println!("🔊 오디오 시작 (첫 프레임 후)");
+                        crate::utils::logger::debug("Audio started (synced)");
                         audio_player = Some(player);
                     }
                     Err(e) => {
-                        println!("⚠️  오디오 재생 실패: {}", e);
+                        crate::utils::logger::error(&format!("Audio failed: {}", e));
                     }
                 }
             }
@@ -307,7 +307,7 @@ pub fn run_interactive_mode() -> Result<()> {
         frame_idx += 1;
     }
     
-    println!("DEBUG: Render loop ended. Frames: {}, Dropped: {}", frame_idx, frames_dropped);
+    crate::utils::logger::debug(&format!("Render loop ended. Frames: {}, Dropped: {}", frame_idx, frames_dropped));
     
     // Wait for decoder thread
     let _ = decoder_handle.join();

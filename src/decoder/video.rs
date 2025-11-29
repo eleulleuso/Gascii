@@ -81,7 +81,7 @@ impl VideoDecoder {
 
     pub fn spawn_decoding_thread(mut self, sender: Sender<FrameData>) -> std::thread::JoinHandle<Result<()>> {
         std::thread::spawn(move || {
-            println!("DEBUG: Decoder thread started");
+            crate::utils::logger::debug("Decoder thread started");
             loop {
                 let mut buffer = Vec::new();
                 match self.read_frame_into(&mut buffer) {
@@ -92,21 +92,21 @@ impl VideoDecoder {
                             height: self.height,
                         };
                         if sender.send(frame).is_err() {
-                            println!("DEBUG: Decoder sender error (receiver dropped)");
+                            crate::utils::logger::debug("Decoder sender error (receiver dropped)");
                             break; // Receiver dropped
                         }
                     }
                     Ok(false) => {
-                        println!("DEBUG: Decoder EOF");
+                        crate::utils::logger::debug("Decoder EOF");
                         break; // EOF
                     }
                     Err(e) => {
-                        eprintln!("Decoding error: {}", e);
+                        crate::utils::logger::error(&format!("Decoding error: {}", e));
                         break;
                     }
                 }
             }
-            println!("DEBUG: Decoder thread exiting");
+            crate::utils::logger::debug("Decoder thread exiting");
             Ok(())
         })
     }

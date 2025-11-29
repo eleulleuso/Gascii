@@ -158,8 +158,8 @@ impl DisplayManager {
         self.render_buffer.clear();
         let buffer = &mut self.render_buffer;
         
-        let mut last_fg: Option<RgbColor> = None;
-        let mut last_bg: Option<RgbColor> = None;
+        let mut last_fg: Option<u8> = None;
+        let mut last_bg: Option<u8> = None;
         
         // ... (centering logic remains same)
         let (mut term_cols, mut term_rows) = terminal::size().unwrap_or((80, 24));
@@ -220,15 +220,14 @@ impl DisplayManager {
             } else if cell.char != old_cell.char {
                 true
             } else {
-                // Check color distance
-                let fg_dist = (cell.fg.0 as i32 - old_cell.fg.0 as i32).pow(2) + 
-                              (cell.fg.1 as i32 - old_cell.fg.1 as i32).pow(2) + 
-                              (cell.fg.2 as i32 - old_cell.fg.2 as i32).pow(2);
-                let bg_dist = (cell.bg.0 as i32 - old_cell.bg.0 as i32).pow(2) + 
-                              (cell.bg.1 as i32 - old_cell.bg.1 as i32).pow(2) + 
-                              (cell.bg.2 as i32 - old_cell.bg.2 as i32).pow(2);
+                // Check color distance (simple difference for indices, though not perceptually accurate)
+                // For 256 colors, indices are not linear, so diffing indices is rough.
+                // But for "Lossy Diffing", we can just check if they are identical for now.
+                // Or we can implement a lookup table for distance, but that's expensive.
+                // Let's just check equality for 256 colors as "Lossy Diffing" is less relevant 
+                // when we already quantized to 256 colors (which is lossy itself).
                 
-                fg_dist > diff_threshold || bg_dist > diff_threshold
+                cell.fg != old_cell.fg || cell.bg != old_cell.bg
             };
 
             if is_different {
@@ -256,24 +255,18 @@ impl DisplayManager {
                     cursor_y = target_y as i32;
                 }
                 
-                // Zero-Allocation Color Updates
+                // Zero-Allocation Color Updates (256-color ANSI)
+                // FG: \x1b[38;5;Nm
                 if Some(cell.fg) != last_fg {
-                    buffer.extend_from_slice(b"\x1b[38;2;");
-                    Self::write_u8_fast(buffer, cell.fg.0);
-                    buffer.push(b';');
-                    Self::write_u8_fast(buffer, cell.fg.1);
-                    buffer.push(b';');
-                    Self::write_u8_fast(buffer, cell.fg.2);
+                    buffer.extend_from_slice(b"\x1b[38;5;");
+                    Self::write_u8_fast(buffer, cell.fg);
                     buffer.push(b'm');
                     last_fg = Some(cell.fg);
                 }
+                // BG: \x1b[48;5;Nm
                 if Some(cell.bg) != last_bg {
-                    buffer.extend_from_slice(b"\x1b[48;2;");
-                    Self::write_u8_fast(buffer, cell.bg.0);
-                    buffer.push(b';');
-                    Self::write_u8_fast(buffer, cell.bg.1);
-                    buffer.push(b';');
-                    Self::write_u8_fast(buffer, cell.bg.2);
+                    buffer.extend_from_slice(b"\x1b[48;5;");
+                    Self::write_u8_fast(buffer, cell.bg);
                     buffer.push(b'm');
                     last_bg = Some(cell.bg);
                 }

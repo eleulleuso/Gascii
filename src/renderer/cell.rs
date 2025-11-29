@@ -8,16 +8,16 @@ pub struct RgbColor(pub u8, pub u8, pub u8);
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct CellData {
     pub char: char,
-    pub fg: u8, // ANSI 256 color index
-    pub bg: u8, // ANSI 256 color index
+    pub fg: (u8, u8, u8), // RGB
+    pub bg: (u8, u8, u8), // RGB
 }
 
 impl Default for CellData {
     fn default() -> Self {
         Self {
             char: ' ',
-            fg: 0, // Black
-            bg: 0, // Black
+            fg: (0, 0, 0),
+            bg: (0, 0, 0),
         }
     }
 }

@@ -8,7 +8,7 @@ use crossterm::{
 };
 use std::io::{Stdout, Write, BufWriter};
 
-use super::cell::{CellData, RgbColor};
+use super::cell::CellData;
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
 pub enum DisplayMode {
@@ -158,8 +158,8 @@ impl DisplayManager {
         self.render_buffer.clear();
         let buffer = &mut self.render_buffer;
         
-        let mut last_fg: Option<u8> = None;
-        let mut last_bg: Option<u8> = None;
+        let mut last_fg: Option<(u8, u8, u8)> = None;
+        let mut last_bg: Option<(u8, u8, u8)> = None;
         
         // ... (centering logic remains same)
         let (mut term_cols, mut term_rows) = terminal::size().unwrap_or((80, 24));
@@ -255,18 +255,26 @@ impl DisplayManager {
                     cursor_y = target_y as i32;
                 }
                 
-                // Zero-Allocation Color Updates (256-color ANSI)
-                // FG: \x1b[38;5;Nm
+                // Zero-Allocation Color Updates (TrueColor)
+                // FG: \x1b[38;2;R;G;Bm
                 if Some(cell.fg) != last_fg {
-                    buffer.extend_from_slice(b"\x1b[38;5;");
-                    Self::write_u8_fast(buffer, cell.fg);
+                    buffer.extend_from_slice(b"\x1b[38;2;");
+                    Self::write_u8_fast(buffer, cell.fg.0);
+                    buffer.push(b';');
+                    Self::write_u8_fast(buffer, cell.fg.1);
+                    buffer.push(b';');
+                    Self::write_u8_fast(buffer, cell.fg.2);
                     buffer.push(b'm');
                     last_fg = Some(cell.fg);
                 }
-                // BG: \x1b[48;5;Nm
+                // BG: \x1b[48;2;R;G;Bm
                 if Some(cell.bg) != last_bg {
-                    buffer.extend_from_slice(b"\x1b[48;5;");
-                    Self::write_u8_fast(buffer, cell.bg);
+                    buffer.extend_from_slice(b"\x1b[48;2;");
+                    Self::write_u8_fast(buffer, cell.bg.0);
+                    buffer.push(b';');
+                    Self::write_u8_fast(buffer, cell.bg.1);
+                    buffer.push(b';');
+                    Self::write_u8_fast(buffer, cell.bg.2);
                     buffer.push(b'm');
                     last_bg = Some(cell.bg);
                 }

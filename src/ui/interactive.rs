@@ -5,6 +5,7 @@ use crossterm::{
     event::{self, Event, KeyCode},
 };
 use std::time::Duration;
+use std::io::Write;
 
 // Direct module imports
 use crate::renderer::{DisplayManager, DisplayMode, FrameProcessor};
@@ -62,7 +63,7 @@ pub fn run_game(
     // Audio extraction logic if needed
     let mut final_audio_path: Option<String> = audio_path.map(|p| p.to_string_lossy().to_string());
     
-    // If audio not provided, try to find extracted audio or extract it
+    // Only try to find/extract audio if NO audio path was provided
     if final_audio_path.is_none() {
         let audio_dir = Path::new("assets/audio");
         if !audio_dir.exists() {
@@ -99,6 +100,8 @@ pub fn run_game(
                 println!("⚠️  ffmpeg를 찾을 수 없습니다. 오디오 없이 재생합니다.");
             }
         }
+    } else {
+        println!("🎵 사용자 지정 오디오 사용: {}", final_audio_path.as_ref().unwrap());
     }
 
     // === START PRODUCER-CONSUMER IMPLEMENTATION WITH SYNC ===
@@ -125,7 +128,7 @@ pub fn run_game(
     
     // Spawn decoder thread
     let decoder_handle = decoder.spawn_decoding_thread(frame_sender);
-    
+
     // === SYNC SYSTEM ===
     let clock = MasterClock::new();
     
@@ -236,14 +239,9 @@ pub fn run_game(
         // Check if disconnected and empty
         if frame_to_render.is_none() && frame_receiver.is_empty() && frame_receiver.len() == 0 {
              // Check if channel is actually disconnected
-             // try_recv returned Empty, but we need to know if it's disconnected?
-             // try_recv returns Disconnected if disconnected AND empty.
-             // So if we got Empty, it's not disconnected (or not empty).
-             // If we got Disconnected, we broke the inner loop.
-             // But we need to check if we should exit the outer loop.
-             // We can check if decoder_handle is finished? No.
-             // We rely on TryRecvError::Disconnected.
-             // Let's add a flag.
+             if let Err(crossbeam_channel::TryRecvError::Disconnected) = frame_receiver.try_recv() {
+                  break;
+             }
         }
         
         // If we found a frame, render it
@@ -261,6 +259,7 @@ pub fn run_game(
                  }
              }
 
+            // Process frame (TrueColor)
             processor.process_frame_into(&frame.buffer, &mut cell_buffer);
             
             if let Err(e) = display.render_diff(&cell_buffer, target_w as usize) {
@@ -296,4 +295,3 @@ pub fn run_game(
 
     Ok(())
 }
-    

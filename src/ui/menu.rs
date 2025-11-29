@@ -54,24 +54,48 @@ pub fn run_menu() -> Result<()> {
     let selected_video = &video_files[selection];
 
     // 3. Select Audio (Optional)
-    // Try to find matching audio
-    let video_stem = selected_video.file_stem().unwrap().to_string_lossy();
-    
-    // Check for common audio extensions
-    let audio_extensions = ["wav", "mp3", "m4a", "flac"];
-    let mut audio_path = None;
+    let mut audio_files: Vec<PathBuf> = if audio_dir.exists() {
+        fs::read_dir(audio_dir)?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                matches!(ext.as_str(), "wav" | "mp3" | "m4a" | "flac")
+            })
+            .collect()
+    } else {
+        vec![]
+    };
 
-    eprintln!("🔍 오디오 파일 검색 중: {} (in {})", video_stem, audio_dir.display());
-    for ext in audio_extensions {
-        let candidate = audio_dir.join(format!("{}.{}", video_stem, ext));
-        if candidate.exists() {
-            eprintln!("✅ 오디오 파일 발견: {}", candidate.display());
-            audio_path = Some(candidate);
-            break;
+    audio_files.sort();
+
+    let mut audio_path = None;
+    if !audio_files.is_empty() {
+        // DEBUG: Print sorted file list
+        eprintln!("\n🔍 DEBUG: 정렬된 오디오 파일 목록:");
+        for (i, f) in audio_files.iter().enumerate() {
+            eprintln!("  [{}] {}", i, f.file_name().unwrap().to_string_lossy());
         }
-    }
-    if audio_path.is_none() {
-        eprintln!("⚠️ 오디오 파일을 찾을 수 없습니다.");
+        
+        let mut audio_names: Vec<String> = audio_files.iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        audio_names.insert(0, "오디오 없이 재생".to_string());
+
+        let audio_selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("🎵 오디오 파일 선택")
+            .default(0)
+            .items(&audio_names)
+            .interact_on(&Term::stderr())?;
+
+        if audio_selection > 0 {
+            let selected_file = &audio_files[audio_selection - 1];
+            eprintln!("🔍 DEBUG: 선택된 인덱스: {}", audio_selection);
+            eprintln!("🔍 DEBUG: audio_files[{}] = {}", audio_selection - 1, selected_file.display());
+            audio_path = Some(selected_file.clone());
+        }
+    } else {
+        eprintln!("⚠️ assets/audio 디렉토리에 오디오 파일이 없습니다.");
     }
 
     // 4. Select Mode

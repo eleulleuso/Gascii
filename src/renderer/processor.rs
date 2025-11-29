@@ -1,5 +1,6 @@
 use rayon::prelude::*;
 use super::cell::CellData;
+use super::quantizer::ColorQuantizer;
 
 pub struct FrameProcessor {
     pub width: usize,
@@ -33,47 +34,70 @@ impl FrameProcessor {
         // Resize output buffer if needed
         let total_cells = term_width * term_height;
         if output.len() != total_cells {
-            output.resize(total_cells, CellData { char: ' ', fg: (0,0,0), bg: (0,0,0) });
+            output.resize(total_cells, CellData { char: ' ', fg: 16, bg: 16 }); // Black (index 16)
         }
 
-        // Process in row-major order for cache-friendly memory access
-        // Use Rayon for parallel row processing
-        // We split the output buffer into rows and process them in parallel
-        output.par_chunks_mut(term_width)
+        // Rayon optimization: adaptive chunk size
+        // For small screens, use larger chunks to reduce task overhead
+        let num_cpus = rayon::current_num_threads();
+        let chunk_size = if term_height < 50 {
+            // Small screen: process serially (avoid parallelization overhead)
+            term_height
+        } else {
+            // Large screen: split into chunks per CPU
+            (term_height / num_cpus).max(4)
+        };
+        
+        let chunk_height = chunk_size;
+        let chunk_cells = term_width * chunk_height;
+
+        // Process in row-major order with optimized chunk size
+        output.par_chunks_mut(chunk_cells)
             .enumerate()
-            .for_each(|(cy, row_cells)| {
-                for cx in 0..term_width {
-                    // Map char (cx, cy) to pixels: top=(cx, 2*cy), bottom=(cx, 2*cy+1)
-                    let py_top = cy * 2;
-                    let py_bottom = cy * 2 + 1;
+            .for_each(|(chunk_idx, chunk_cells)| {
+                let start_row = chunk_idx * chunk_height;
+                
+                for local_y in 0..chunk_height {
+                    let cy = start_row + local_y;
+                    if cy >= term_height {
+                        break;
+                    }
+                    
+                    for cx in 0..term_width {
+                        // Map char (cx, cy) to pixels: top=(cx, 2*cy), bottom=(cx, 2*cy+1)
+                        let py_top = cy * 2;
+                        let py_bottom = cy * 2 + 1;
 
-                    // Inline hot path for pixel access (avoid function call overhead)
-                    let get_pixel_fast = |x: usize, y: usize| -> (u8, u8, u8) {
-                        let p_idx = (y * self.width + x) * 3;
-                        // SAFETY: Bounds checking moved outside hot loop
-                        // We know frame_data.len() == width * height * 3
-                        if p_idx + 2 < frame_data.len() {
-                            // SAFETY: bounds checked above with p_idx + 2 < len
-                            unsafe {
-                                (
-                                    *frame_data.get_unchecked(p_idx),
-                                    *frame_data.get_unchecked(p_idx + 1),
-                                    *frame_data.get_unchecked(p_idx + 2),
-                                )
+                        // Inline hot path for pixel access
+                        let get_pixel_fast = |x: usize, y: usize| -> (u8, u8, u8) {
+                            let p_idx = (y * self.width + x) * 3;
+                            if p_idx + 2 < frame_data.len() {
+                                unsafe {
+                                    (
+                                        *frame_data.get_unchecked(p_idx),
+                                        *frame_data.get_unchecked(p_idx + 1),
+                                        *frame_data.get_unchecked(p_idx + 2),
+                                    )
+                                }
+                            } else {
+                                (0, 0, 0)
                             }
-                        } else {
-                            (0, 0, 0)
-                        }
-                    };
+                        };
 
-                    let top_color = get_pixel_fast(cx, py_top);
-                    let bottom_color = get_pixel_fast(cx, py_bottom);
+                        let top_color = get_pixel_fast(cx, py_top);
+                        let bottom_color = get_pixel_fast(cx, py_bottom);
+                        
+                        // Quantize RGB to ANSI 256 colors
+                        let fg_idx = ColorQuantizer::quantize_rgb(top_color.0, top_color.1, top_color.2);
+                        let bg_idx = ColorQuantizer::quantize_rgb(bottom_color.0, bottom_color.1, bottom_color.2);
 
-                    row_cells[cx] = CellData {
-                        char: '▀', // Upper Half Block
-                        fg: top_color,
-                        bg: bottom_color,
-                    };
+                        let cell_idx = local_y * term_width + cx;
+                        chunk_cells[cell_idx] = CellData {
+                            char: '▀', // Upper Half Block
+                            fg: fg_idx,
+                            bg: bg_idx,
+                        };
+                    }
                 }
             });
     }

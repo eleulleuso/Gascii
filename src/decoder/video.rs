@@ -9,6 +9,8 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use crossbeam_channel::Sender;
 use super::frame_data::FrameData;
+use fast_image_resize as fr;
+use fr::images::Image;
 
 pub struct VideoDecoder {
     capture: videoio::VideoCapture,
@@ -79,6 +81,7 @@ impl VideoDecoder {
 
     pub fn spawn_decoding_thread(mut self, sender: Sender<FrameData>) -> std::thread::JoinHandle<Result<()>> {
         std::thread::spawn(move || {
+            println!("DEBUG: Decoder thread started");
             loop {
                 let mut buffer = Vec::new();
                 match self.read_frame_into(&mut buffer) {
@@ -89,16 +92,21 @@ impl VideoDecoder {
                             height: self.height,
                         };
                         if sender.send(frame).is_err() {
+                            println!("DEBUG: Decoder sender error (receiver dropped)");
                             break; // Receiver dropped
                         }
                     }
-                    Ok(false) => break, // EOF
+                    Ok(false) => {
+                        println!("DEBUG: Decoder EOF");
+                        break; // EOF
+                    }
                     Err(e) => {
                         eprintln!("Decoding error: {}", e);
                         break;
                     }
                 }
             }
+            println!("DEBUG: Decoder thread exiting");
             Ok(())
         })
     }
@@ -127,71 +135,112 @@ impl VideoDecoder {
             return Ok(false);
         }
 
-        // 2. Resize & Crop (CPU) + Letterbox into target frame size
-        let mut resized = Mat::default();
+        // 2. SIMD-optimized Resize with fast_image_resize
         let start_resize = std::time::Instant::now();
-
-        // Resize directly from original frame but maintain aspect ratio and letterbox if necessary
-        let orig_w = frame.cols();
-        let orig_h = frame.rows();
+        
+        let orig_w = frame.cols() as u32;
+        let orig_h = frame.rows() as u32;
+        
+        // Calculate aspect ratio preserving dimensions
         let scale_w = self.width as f64 / orig_w as f64;
         let scale_h = self.height as f64 / orig_h as f64;
         let scale = if self.fill_mode { scale_w.max(scale_h) } else { scale_w.min(scale_h) };
-        let new_w = ((orig_w as f64 * scale).round() as i32).max(1);
-        let new_h = ((orig_h as f64 * scale).round() as i32).max(1);
-        imgproc::resize(&frame, &mut resized, core::Size::new(new_w, new_h), 0.0, 0.0, imgproc::INTER_LINEAR)?;
+        let new_w = ((orig_w as f64 * scale).round() as u32).max(1);
+        let new_h = ((orig_h as f64 * scale).round() as u32).max(1);
+        
+        // Convert OpenCV Mat (BGR) to fast_image_resize Image (RGB24)
+        // First convert BGR to RGB
+        let mut rgb_opencv = Mat::default();
+        imgproc::cvt_color(&frame, &mut rgb_opencv, imgproc::COLOR_BGR2RGB, 0,
+                          core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+        
+        // Get raw bytes
+        if !rgb_opencv.is_continuous() {
+            return Err(anyhow!("Frame is not continuous"));
+        }
+        let rgb_bytes = rgb_opencv.data_bytes()?;
+        
+        // Create source image
+        let src_image = Image::from_vec_u8(
+            orig_w,
+            orig_h,
+            rgb_bytes.to_vec(),
+            fr::PixelType::U8x3,
+        )?;
+        
+        // Create destination image
+        let mut dst_image = Image::new(
+            new_w,
+            new_h,
+            fr::PixelType::U8x3,
+        );
+        
+        // Create resizer (uses SIMD when available)
+        let mut resizer = fr::Resizer::new();
+        resizer.resize(&src_image, &mut dst_image, None)?;
+        
         let resize_time = start_resize.elapsed();
 
-        // Create final canvas with letterbox (black background) at target size and center the resized frame
-        // If fill_mode is true and resized is larger than canvas, crop center; otherwise, letterbox
-        let mut canvas = Mat::zeros(self.height as i32, self.width as i32, frame.typ())?.to_mat()?;
-        if resized.cols() > self.width as i32 || resized.rows() > self.height as i32 {
-            // Crop center of resized to fit canvas
-            let crop_x = ((resized.cols() - self.width as i32) / 2).max(0);
-            let crop_y = ((resized.rows() - self.height as i32) / 2).max(0);
-            let crop_rect = core::Rect::new(crop_x, crop_y, self.width as i32, self.height as i32);
-            let cropped = Mat::roi(&resized, crop_rect)?;
-            cropped.copy_to(&mut canvas)?;
+        // 3. Letterbox/Crop to exact target dimensions
+        let start_letterbox = std::time::Instant::now();
+        
+        let mut canvas = vec![0u8; (self.width * self.height * 3) as usize];
+        
+        if new_w > self.width || new_h > self.height {
+            // Crop center
+            let crop_x = ((new_w - self.width) / 2) as usize;
+            let crop_y = ((new_h - self.height) / 2) as usize;
+            
+            for y in 0..self.height {
+                let src_y = crop_y + y as usize;
+                let src_offset = (src_y * new_w as usize + crop_x) * 3;
+                let dst_offset = (y * self.width) as usize * 3;
+                let copy_len = (self.width as usize * 3).min(dst_image.buffer().len() - src_offset);
+                
+                if src_offset + copy_len <= dst_image.buffer().len() 
+                    && dst_offset + copy_len <= canvas.len() {
+                    canvas[dst_offset..dst_offset + copy_len]
+                        .copy_from_slice(&dst_image.buffer()[src_offset..src_offset + copy_len]);
+                }
+            }
         } else {
-            // letterbox (center)
-            let x_off = ((self.width as i32 - resized.cols()) / 2).max(0);
-            let y_off = ((self.height as i32 - resized.rows()) / 2).max(0);
-            let roi = core::Rect::new(x_off, y_off, resized.cols(), resized.rows());
-            let mut canvas_roi = Mat::roi_mut(&mut canvas, roi)?;
-            resized.copy_to(&mut canvas_roi)?;
-        }
-
-        // 3. Color Conversion (CPU) on final canvas
-        let start_cvt = std::time::Instant::now();
-        let mut rgb = Mat::default();
-        imgproc::cvt_color(&canvas, &mut rgb, imgproc::COLOR_BGR2RGB, 0, 
-                          core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
-        let cvt_time = start_cvt.elapsed();
-
-        // Return raw bytes
-        if !rgb.is_continuous() {
-            return Err(anyhow!("Frame data is not continuous"));
+            // Letterbox (center)
+            let x_off = ((self.width - new_w) / 2) as usize;
+            let y_off = ((self.height - new_h) / 2) as usize;
+            
+            for y in 0..new_h {
+                let src_offset = (y * new_w) as usize * 3;
+                let dst_y = y_off + y as usize;
+                let dst_offset = (dst_y * self.width as usize + x_off) * 3;
+                let copy_len = (new_w as usize * 3).min(dst_image.buffer().len() - src_offset);
+                
+                if src_offset + copy_len <= dst_image.buffer().len()
+                    && dst_offset + copy_len <= canvas.len() {
+                    canvas[dst_offset..dst_offset + copy_len]
+                        .copy_from_slice(&dst_image.buffer()[src_offset..src_offset + copy_len]);
+                }
+            }
         }
         
-        let data = rgb.data_bytes()?;
+        let letterbox_time = start_letterbox.elapsed();
+        
+        // Return the canvas buffer
         buffer.clear();
-        buffer.extend_from_slice(data);
+        buffer.extend_from_slice(&canvas);
         
         let total_time = start_total.elapsed();
 
         // Log slow frames (> 10ms) to debug.log
         if total_time.as_millis() > 10 {
-            use std::fs::OpenOptions;
-            use std::io::Write;
             let mut log_path = std::env::current_dir().unwrap_or_default();
             log_path.push("debug.log");
 
             if let Ok(mut file) = OpenOptions::new().append(true).open(log_path) {
-                let _ = writeln!(file, "SLOW FRAME: Total={}us | Decode={}us | Resize={}us | Cvt={}us", 
+                let _ = writeln!(file, "SIMD_FRAME: Total={}us | Decode={}us | Resize={}us | Letterbox={}us", 
                     total_time.as_micros(),
                     decode_time.as_micros(),
                     resize_time.as_micros(),
-                    cvt_time.as_micros()
+                    letterbox_time.as_micros()
                 );
             }
         }

@@ -1,11 +1,20 @@
-use anyhow::Result;
+use anyhow::{Result, Context};
 use dialoguer::{theme::ColorfulTheme, Select};
 use std::path::{Path, PathBuf};
 use std::fs;
+use crossterm::{
+    event::{self, Event, KeyCode, KeyModifiers},
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
+    ExecutableCommand,
+};
+use std::io::stdout;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 // Direct module imports
 use crate::renderer::{DisplayManager, DisplayMode, FrameProcessor};
-use crate::decoder::{VideoDecoder, FrameData};
+use crate::decoder::VideoDecoder;
 use crate::audio::AudioPlayer;
 use crate::sync::{MasterClock, VSync};
 
@@ -222,21 +231,43 @@ pub fn run_interactive_mode() -> Result<()> {
     let start_time = std::time::Instant::now();
     let frame_duration = std::time::Duration::from_secs_f64(1.0 / fps);
     
+    // Adaptive frame skip with EWMA
+    let mut avg_frame_time = frame_duration;
+    const EWMA_ALPHA: f64 = 0.3; // Weight for new samples
+    
     // CONSUMER LOOP WITH ABSOLUTE TIMING (Drift-free)
     let mut frame_idx = 0u64;
     let mut frames_dropped = 0u64;
     let mut audio_player = None; // Will start after first frame
     
+    println!("DEBUG: Starting render loop");
+    
     for frame_data in frame_receiver {
+        let frame_start = std::time::Instant::now();
+        
         // Calculate when THIS frame should be displayed
         let expected_time = frame_duration * frame_idx as u32;
         let elapsed = clock.elapsed();
         
+        // Adaptive threshold based on recent performance
+        let drop_threshold = if avg_frame_time > frame_duration.mul_f64(1.2) {
+            1  // Aggressive drop if consistently slow
+        } else {
+            3  // Conservative if normal
+        };
+        
+        // Check how far behind we are
+        let behind_frames = if elapsed > expected_time {
+            ((elapsed - expected_time).as_secs_f64() / frame_duration.as_secs_f64()) as u64
+        } else {
+            0
+        };
+        
         // Drift correction: sleep until the expected time
         if elapsed < expected_time {
             std::thread::sleep(expected_time - elapsed);
-        } else if elapsed > expected_time + frame_duration * 2 {
-            // More than 2 frames behind → skip this frame
+        } else if behind_frames > drop_threshold {
+            // More than threshold frames behind → skip this frame
             frames_dropped += 1;
             frame_idx += 1;
             continue;
@@ -246,7 +277,10 @@ pub fn run_interactive_mode() -> Result<()> {
         processor.process_frame_into(&frame_data.buffer, &mut cell_buffer);
         
         // Render
-        display.render_diff(&cell_buffer, target_w as usize)?;
+        if let Err(e) = display.render_diff(&cell_buffer, target_w as usize) {
+            println!("DEBUG: Render error: {}", e);
+            return Err(e);
+        }
         
         // Start audio AFTER first frame is rendered (for sync)
         if audio_player.is_none() {
@@ -256,15 +290,24 @@ pub fn run_interactive_mode() -> Result<()> {
                         println!("🔊 오디오 시작 (첫 프레임 후)");
                         audio_player = Some(player);
                     }
-                    Err(_) => {
-                        println!("⚠️  오디오 재생 실패");
+                    Err(e) => {
+                        println!("⚠️  오디오 재생 실패: {}", e);
                     }
                 }
             }
         }
         
+        // Update moving average frame time
+        let current_frame_time = frame_start.elapsed();
+        avg_frame_time = std::time::Duration::from_secs_f64(
+            avg_frame_time.as_secs_f64() * (1.0 - EWMA_ALPHA) 
+            + current_frame_time.as_secs_f64() * EWMA_ALPHA
+        );
+        
         frame_idx += 1;
     }
+    
+    println!("DEBUG: Render loop ended. Frames: {}, Dropped: {}", frame_idx, frames_dropped);
     
     // Wait for decoder thread
     let _ = decoder_handle.join();

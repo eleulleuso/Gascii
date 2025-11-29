@@ -94,7 +94,7 @@ impl DisplayManager {
         let mut force_redraw = false;
         if self.last_cells.as_ref().map(|v| v.len()).unwrap_or(0) != cells.len() {
             self.stdout.queue(crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
-            self.last_cells = Some(vec![CellData { char: ' ', fg: (0,0,0), bg: (0,0,0) }; cells.len()]);
+            self.last_cells = Some(vec![CellData { char: ' ', fg: 16, bg: 16 }; cells.len()]);
             force_redraw = true;
         }
 
@@ -107,8 +107,8 @@ impl DisplayManager {
         self.render_buffer.clear();
         let buffer = &mut self.render_buffer;
         
-        let mut last_fg: Option<(u8, u8, u8)> = None;
-        let mut last_bg: Option<(u8, u8, u8)> = None;
+        let mut last_fg: Option<u8> = None;
+        let mut last_bg: Option<u8> = None;
         
         // Calculate centering offsets dynamically
         let (mut term_cols, mut term_rows) = terminal::size().unwrap_or((80, 24));
@@ -175,26 +175,18 @@ impl DisplayManager {
                     cursor_y = target_y as i32;
                 }
                 
-                // Color updates
-                if Some(cell.fg) != last_fg { 
-                    buffer.extend_from_slice(b"\x1b[38;2;");
-                    buffer.extend_from_slice(cell.fg.0.to_string().as_bytes());
-                    buffer.extend_from_slice(b";");
-                    buffer.extend_from_slice(cell.fg.1.to_string().as_bytes());
-                    buffer.extend_from_slice(b";");
-                    buffer.extend_from_slice(cell.fg.2.to_string().as_bytes());
-                    buffer.extend_from_slice(b"m");
-                    last_fg = Some(cell.fg); 
+                // Color updates with ANSI 256-color format
+                if Some(cell.fg) != last_fg {
+                    buffer.extend_from_slice(b"\x1b[38;5;");
+                    buffer.extend_from_slice(cell.fg.to_string().as_bytes());
+                    buffer.push(b'm');
+                    last_fg = Some(cell.fg);
                 }
-                if Some(cell.bg) != last_bg { 
-                    buffer.extend_from_slice(b"\x1b[48;2;");
-                    buffer.extend_from_slice(cell.bg.0.to_string().as_bytes());
-                    buffer.extend_from_slice(b";");
-                    buffer.extend_from_slice(cell.bg.1.to_string().as_bytes());
-                    buffer.extend_from_slice(b";");
-                    buffer.extend_from_slice(cell.bg.2.to_string().as_bytes());
-                    buffer.extend_from_slice(b"m");
-                    last_bg = Some(cell.bg); 
+                if Some(cell.bg) != last_bg {
+                    buffer.extend_from_slice(b"\x1b[48;5;");
+                    buffer.extend_from_slice(cell.bg.to_string().as_bytes());
+                    buffer.push(b'm');
+                    last_bg = Some(cell.bg);
                 }
                 
                 // Write character
@@ -240,10 +232,10 @@ impl DisplayManager {
     /// Generate the render buffer without writing to stdout. Useful for testing.
     pub fn render_buffer_for(&mut self, cells: &[CellData], width: usize) -> Result<Vec<u8>> {
         self.render_buffer.clear();
+        // Track last color to avoid redundant escape sequences
         let buffer = &mut self.render_buffer;
-
-        let mut last_fg: Option<(u8, u8, u8)> = None;
-        let mut last_bg: Option<(u8, u8, u8)> = None;
+        let mut last_fg: Option<u8> = None;
+        let mut last_bg: Option<u8> = None;
 
         let (term_cols, term_rows) = terminal::size().unwrap_or((80, 24));
         let content_width = width as u16;
@@ -273,23 +265,15 @@ impl DisplayManager {
                 cursor_y = target_y as i32;
             }
             if Some(cell.fg) != last_fg {
-                buffer.extend_from_slice(b"\x1b[38;2;");
-                buffer.extend_from_slice(cell.fg.0.to_string().as_bytes());
-                buffer.extend_from_slice(b";");
-                buffer.extend_from_slice(cell.fg.1.to_string().as_bytes());
-                buffer.extend_from_slice(b";");
-                buffer.extend_from_slice(cell.fg.2.to_string().as_bytes());
-                buffer.extend_from_slice(b"m");
+                buffer.extend_from_slice(b"\x1b[38;5;");
+                buffer.extend_from_slice(cell.fg.to_string().as_bytes());
+                buffer.push(b'm');
                 last_fg = Some(cell.fg);
             }
             if Some(cell.bg) != last_bg {
-                buffer.extend_from_slice(b"\x1b[48;2;");
-                buffer.extend_from_slice(cell.bg.0.to_string().as_bytes());
-                buffer.extend_from_slice(b";");
-                buffer.extend_from_slice(cell.bg.1.to_string().as_bytes());
-                buffer.extend_from_slice(b";");
-                buffer.extend_from_slice(cell.bg.2.to_string().as_bytes());
-                buffer.extend_from_slice(b"m");
+                buffer.extend_from_slice(b"\x1b[48;5;");
+                buffer.extend_from_slice(cell.bg.to_string().as_bytes());
+                buffer.push(b'm');
                 last_bg = Some(cell.bg);
             }
             let mut b_dst = [0u8; 4];
@@ -320,16 +304,16 @@ mod tests {
         let mut dm = DisplayManager::new(DisplayMode::Rgb).unwrap();
         // Make small 2x2 image (term_width 2 -> cells=4)
         let cells = vec![
-            CellData{ char: 'A', fg: (255,0,0), bg: (0,0,0) },
-            CellData{ char: 'B', fg: (255,0,0), bg: (0,0,0) },
-            CellData{ char: 'C', fg: (0,255,0), bg: (0,0,0) },
-            CellData{ char: 'D', fg: (0,255,0), bg: (0,0,0) },
+            CellData{ char: 'A', fg: 196, bg: 16 }, // Red on Black
+            CellData{ char: 'B', fg: 196, bg: 16 },
+            CellData{ char: 'C', fg: 46, bg: 16 },  // Green on Black
+            CellData{ char: 'D', fg: 46, bg: 16 },
         ];
 
         let buf = dm.render_buffer_for(&cells, 2).unwrap();
         let s = String::from_utf8_lossy(&buf);
-        // Expect to find color codes and characters
-        assert!(s.contains("38;2;255;0;0") || s.contains("38;2;0;255;0"));
+        // Expect to find 256-color codes
+        assert!(s.contains("38;5;"));
         assert!(s.contains("A") || s.contains("B") || s.contains("C") || s.contains("D"));
     }
 }

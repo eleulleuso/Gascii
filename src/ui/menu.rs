@@ -1,5 +1,5 @@
 use anyhow::Result;
-use dialoguer::{theme::ColorfulTheme, Select};
+use dialoguer::{theme::ColorfulTheme, Select, console::Term};
 use std::path::{Path, PathBuf};
 use std::fs;
 
@@ -49,20 +49,30 @@ pub fn run_menu() -> Result<()> {
         .with_prompt("📺 재생할 영상을 선택하세요")
         .default(0)
         .items(&video_names)
-        .interact()?;
+        .interact_on(&Term::stderr())?;
 
     let selected_video = &video_files[selection];
 
     // 3. Select Audio (Optional)
     // Try to find matching audio
     let video_stem = selected_video.file_stem().unwrap().to_string_lossy();
-    let expected_audio = audio_dir.join(format!("{}.mp3", video_stem));
     
-    let audio_path = if expected_audio.exists() {
-        Some(expected_audio)
-    } else {
-        None
-    };
+    // Check for common audio extensions
+    let audio_extensions = ["wav", "mp3", "m4a", "flac"];
+    let mut audio_path = None;
+
+    eprintln!("🔍 오디오 파일 검색 중: {} (in {})", video_stem, audio_dir.display());
+    for ext in audio_extensions {
+        let candidate = audio_dir.join(format!("{}.{}", video_stem, ext));
+        if candidate.exists() {
+            eprintln!("✅ 오디오 파일 발견: {}", candidate.display());
+            audio_path = Some(candidate);
+            break;
+        }
+    }
+    if audio_path.is_none() {
+        eprintln!("⚠️ 오디오 파일을 찾을 수 없습니다.");
+    }
 
     // 4. Select Mode
     let modes = vec!["RGB TrueColor (최고 화질)", "ASCII (텍스트 모드)"];
@@ -70,7 +80,7 @@ pub fn run_menu() -> Result<()> {
         .with_prompt("🎨 렌더링 모드 선택")
         .default(0)
         .items(&modes)
-        .interact()?;
+        .interact_on(&Term::stderr())?;
 
     let mode_str = if mode_selection == 0 { "rgb" } else { "ascii" };
 
@@ -80,19 +90,36 @@ pub fn run_menu() -> Result<()> {
         .with_prompt("🖥️ 화면 모드 선택")
         .default(0)
         .items(&screen_modes)
-        .interact()?;
+        .interact_on(&Term::stderr())?;
 
     let fill_str = if screen_selection == 0 { "true" } else { "false" };
 
-    // Output for shell script to parse
-    println!("VIDEO_PATH={}", selected_video.to_string_lossy());
-    if let Some(a) = audio_path {
-        println!("AUDIO_PATH={}", a.to_string_lossy());
+    // Calculate Ghostty arguments
+    let ghostty_args = if fill_str == "true" {
+        "--fullscreen".to_string()
     } else {
-        println!("AUDIO_PATH=");
+        // For 16:9 aspect ratio with ~1:2 cell ratio, we need approx 3.55:1 col:row ratio
+        // 240x68 provides a good large window
+        "--window-width=240 --window-height=68".to_string()
+    };
+
+    // Output for shell script to parse
+    // Use explicit write to ensure no buffering issues
+    // We add a small delay to ensure previous output is flushed
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    
+    use std::io::Write;
+    let mut stdout = std::io::stdout();
+    writeln!(stdout, "__BAD_APPLE_CONFIG__VIDEO_PATH={}", selected_video.to_string_lossy())?;
+    if let Some(a) = audio_path {
+        writeln!(stdout, "__BAD_APPLE_CONFIG__AUDIO_PATH={}", a.to_string_lossy())?;
+    } else {
+        writeln!(stdout, "__BAD_APPLE_CONFIG__AUDIO_PATH=")?;
     }
-    println!("RENDER_MODE={}", mode_str);
-    println!("FILL_SCREEN={}", fill_str);
+    writeln!(stdout, "__BAD_APPLE_CONFIG__RENDER_MODE={}", mode_str)?;
+    writeln!(stdout, "__BAD_APPLE_CONFIG__FILL_SCREEN={}", fill_str)?;
+    writeln!(stdout, "__BAD_APPLE_CONFIG__GHOSTTY_ARGS={}", ghostty_args)?;
+    stdout.flush()?;
 
     Ok(())
 }

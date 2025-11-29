@@ -12,7 +12,7 @@ impl FrameProcessor {
     }
 
     pub fn process_frame(&self, pixel_data: &[u8]) -> Vec<CellData> {
-        let mut cells = vec![CellData { char: ' ', fg: (0,0,0), bg: (0,0,0) }; self.width * (self.height / 2)];
+        let mut cells = vec![CellData::default(); self.width * (self.height / 2)];
         self.process_frame_into(pixel_data, &mut cells);
         cells
     }
@@ -66,13 +66,13 @@ impl FrameProcessor {
                         }
                     };
 
-                    let top_color = get_pixel(cx, py_top);
-                    let bottom_color = get_pixel(cx, py_bottom);
+                    let (tr, tg, tb) = get_pixel(cx, py_top);
+                    let (br, bg, bb) = get_pixel(cx, py_bottom);
 
                     *cell = CellData {
                         char: '▀', // Upper Half Block
-                        fg: top_color,
-                        bg: bottom_color,
+                        fg: super::cell::RgbColor(tr, tg, tb),
+                        bg: super::cell::RgbColor(br, bg, bb),
                     };
                 }
             });
@@ -82,6 +82,7 @@ impl FrameProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::renderer::cell::RgbColor;
 
     #[test]
     fn test_process_frame_half_block() {
@@ -112,10 +113,10 @@ mod tests {
         assert_eq!(cells.len(), 2 * 2); // term_width * term_height
         
         // First terminal row cell 0 should be fg=red, bg=green
-        assert_eq!(cells[0].fg, (255,0,0));
-        assert_eq!(cells[0].bg, (0,255,0));
+        assert_eq!(cells[0].fg, RgbColor(255,0,0));
+        assert_eq!(cells[0].bg, RgbColor(0,255,0));
         // Second terminal row cell 0 should be fg=blue, bg=yellow
-        assert_eq!(cells[2].fg, (0,0,255));
-        assert_eq!(cells[2].bg, (255,255,0));
+        assert_eq!(cells[2].fg, RgbColor(0,0,255));
+        assert_eq!(cells[2].bg, RgbColor(255,255,0));
     }
 }

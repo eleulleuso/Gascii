@@ -8,7 +8,7 @@ use crossterm::{
 };
 use std::io::{Stdout, Write, BufWriter};
 
-use super::cell::CellData;
+use super::cell::{CellData, RgbColor};
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
 pub enum DisplayMode {
@@ -61,8 +61,6 @@ impl DisplayManager {
         Ok(())
     }
 
-
-
     /// Return terminal size in character columns and rows, converting from pixels when needed.
     pub fn terminal_size_chars(&self) -> Result<(u16, u16)> {
         let (mut term_cols, mut term_rows) = terminal::size()?;
@@ -90,7 +88,7 @@ impl DisplayManager {
         let mut force_redraw = false;
         if self.last_cells.as_ref().map(|v| v.len()).unwrap_or(0) != cells.len() {
             self.stdout.queue(crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
-            self.last_cells = Some(vec![CellData { char: ' ', fg: (0,0,0), bg: (0,0,0) }; cells.len()]);
+            self.last_cells = Some(vec![CellData::default(); cells.len()]);
             force_redraw = true;
         }
 
@@ -103,10 +101,10 @@ impl DisplayManager {
         self.render_buffer.clear();
         let buffer = &mut self.render_buffer;
         
-        let mut last_fg: Option<(u8, u8, u8)> = None;
-        let mut last_bg: Option<(u8, u8, u8)> = None;
+        let mut last_fg: Option<RgbColor> = None;
+        let mut last_bg: Option<RgbColor> = None;
         
-        // Calculate centering offsets dynamically
+        // ... (centering logic remains same)
         let (mut term_cols, mut term_rows) = terminal::size().unwrap_or((80, 24));
 
         // If environment provides CHAR_WIDTH/CHAR_HEIGHT (pixel size per char), convert if

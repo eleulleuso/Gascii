@@ -82,14 +82,20 @@ impl VideoDecoder {
     pub fn spawn_decoding_thread(mut self, sender: Sender<FrameData>) -> std::thread::JoinHandle<Result<()>> {
         std::thread::spawn(move || {
             crate::utils::logger::debug("Decoder thread started");
+            let mut frame_counter: u64 = 0;
             loop {
                 let mut buffer = Vec::new();
                 match self.read_frame_into(&mut buffer) {
                     Ok(true) => {
+                        // Calculate timestamp based on frame count and FPS
+                        let timestamp = std::time::Duration::from_secs_f64(frame_counter as f64 / self.fps);
+                        frame_counter += 1;
+
                         let frame = FrameData {
                             buffer,
                             width: self.width,
                             height: self.height,
+                            timestamp,
                         };
                         if sender.send(frame).is_err() {
                             crate::utils::logger::debug("Decoder sender error (receiver dropped)");

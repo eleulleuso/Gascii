@@ -32,7 +32,11 @@ pub fn run_game(
     let (target_w, target_h) = if fill_screen {
         (terminal_w, terminal_h)
     } else {
-        let target_ratio = 16.0 / 9.0;
+        // Visual 16:9 aspect ratio
+        // Since we use Half-Block rendering (1 char = 2 vertical pixels),
+        // the cell aspect ratio is effectively 1:2.
+        // To achieve visual 16:9, the grid ratio must be 16:4.5 = 32:9 ≈ 3.55
+        let target_ratio = 32.0 / 9.0;
         let terminal_ratio = terminal_w as f32 / terminal_h as f32;
         
         let (w, h) = if terminal_ratio > target_ratio {
@@ -111,7 +115,7 @@ pub fn run_game(
         &video_path.to_string_lossy(),
         pixel_w,
         pixel_h,
-        fill_screen
+        false // Force 'Fit' mode (Letterbox) to prevent cropping in Fullscreen
     )?;
     
     let fps = decoder.get_fps();
@@ -130,7 +134,7 @@ pub fn run_game(
     
     // Reusable buffer (pre-allocate with correct size for half-block rendering)
     let term_height = (pixel_h / 2) as usize;
-    let mut cell_buffer = vec![CellData { char: ' ', fg: (0,0,0), bg: (0,0,0) }; pixel_w as usize * term_height];
+    let mut cell_buffer = vec![CellData::default(); pixel_w as usize * term_height];
     
     crate::utils::logger::debug(&format!("Initialized cell buffer: {}x{} terminal = {} cells", 
         pixel_w, term_height, cell_buffer.len()));
@@ -143,13 +147,16 @@ pub fn run_game(
     let mut avg_frame_time = frame_duration;
     const EWMA_ALPHA: f64 = 0.3; // Weight for new samples
     
-    // CONSUMER LOOP WITH ABSOLUTE TIMING (Drift-free)
+    // CONSUMER LOOP WITH DYNAMIC FRAME SKIP (A/V Sync)
     let mut frame_idx = 0u64;
     let mut frames_dropped = 0u64;
     let mut audio_player = None; // Will start after first frame
     
     crate::utils::logger::debug("Starting render loop");
     
+    // Video start time (will be set on first frame)
+    let mut video_start_time: Option<std::time::Instant> = None;
+
     loop {
         // Input
         if event::poll(Duration::from_millis(0))? {
@@ -160,81 +167,115 @@ pub fn run_game(
             }
         }
         
-        // Receive frame
-        let frame_data = match frame_receiver.recv() {
-            Ok(f) => f,
-            Err(_) => break, // Channel closed (EOF)
-        };
-        
-        // Sync Logic
-        let expected_time = frame_duration.mul_f64(frame_idx as f64);
-        let elapsed = clock.elapsed();
-        
-        // Adaptive threshold based on recent performance
-        let drop_threshold = if avg_frame_time > frame_duration.mul_f64(1.2) {
-            1  // Aggressive drop if consistently slow
+        // Determine current playback time
+        let now = std::time::Instant::now();
+        let playback_time = if let Some(start) = video_start_time {
+            now.duration_since(start)
         } else {
-            3  // Conservative if normal
+            Duration::ZERO
         };
-        
-        // Check how far behind we are
-        let behind_frames = if elapsed > expected_time {
-            ((elapsed - expected_time).as_secs_f64() / frame_duration.as_secs_f64()) as u64
-        } else {
-            0
-        };
-        
-        // Drift correction: sleep until the expected time
-        if elapsed < expected_time {
-            std::thread::sleep(expected_time - elapsed);
-        } else if behind_frames > drop_threshold {
-            // More than threshold frames behind → skip this frame
-            frames_dropped += 1;
-            frame_idx += 1;
-            continue;
-        }
-        
-        // Process frame
-        if frame_idx % 60 == 0 {
-            crate::utils::logger::debug(&format!("Frame {}: buffer_len={}, processing...", 
-                frame_idx, frame_data.buffer.len()));
-        }
-        processor.process_frame_into(&frame_data.buffer, &mut cell_buffer);
-        
-        // Render
-        if let Err(e) = display.render_diff(&cell_buffer, target_w as usize) {
-            crate::utils::logger::error(&format!("Render error: {}", e));
-            return Err(e);
-        }
-        
-        if frame_idx % 60 == 0 {
-            crate::utils::logger::debug(&format!("Frame {} rendered successfully", frame_idx));
-        }
-        
-        // Start audio AFTER first frame is rendered (for sync)
-        if audio_player.is_none() {
-            if let Some(audio_path) = final_audio_path.as_ref() {
-                match AudioPlayer::new(audio_path) {
-                    Ok(player) => {
-                        crate::utils::logger::debug("Audio started (synced)");
-                        audio_player = Some(player);
+
+        let mut frame_to_render: Option<crate::decoder::FrameData> = None;
+
+        // Drain queue to find the most recent valid frame
+        loop {
+            match frame_receiver.try_recv() {
+                Ok(frame) => {
+                    // If this is the very first frame, start the clock
+                    if video_start_time.is_none() {
+                        video_start_time = Some(now);
+                        // Start audio immediately
+                         if let Some(audio_path) = final_audio_path.as_ref() {
+                            match AudioPlayer::new(audio_path) {
+                                Ok(player) => {
+                                    crate::utils::logger::debug("Audio started (synced)");
+                                    audio_player = Some(player);
+                                }
+                                Err(e) => {
+                                    crate::utils::logger::error(&format!("Audio failed: {}", e));
+                                }
+                            }
+                        }
                     }
-                    Err(e) => {
-                        crate::utils::logger::error(&format!("Audio failed: {}", e));
+
+                    // If frame is in the future, save it and stop draining
+                    if frame.timestamp > playback_time {
+                        frame_to_render = Some(frame);
+                        break;
                     }
+                    
+                    // If frame is in the past or present, it's a candidate.
+                    // We keep looping to see if there's a newer one.
+                    // If we overwrite a previous candidate, that means we dropped a frame.
+                    if frame_to_render.is_some() {
+                        frames_dropped += 1;
+                    }
+                    frame_to_render = Some(frame);
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    break;
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    // Decoder finished
+                    // If we have a frame pending, render it, then exit
+                    if frame_to_render.is_none() {
+                        // Really done
+                        // Break outer loop
+                        // We need to return from the function or break the loop
+                        // Since we are inside a nested loop, we use a label or flag
+                        // But here, returning Ok(()) is fine if we are done?
+                        // Wait, we need to print stats.
+                        // Let's break outer loop.
+                        // But we can't break outer loop easily from here without label.
+                    }
+                    break;
                 }
             }
         }
+
+        // Check if disconnected and empty
+        if frame_to_render.is_none() && frame_receiver.is_empty() && frame_receiver.len() == 0 {
+             // Check if channel is actually disconnected
+             // try_recv returned Empty, but we need to know if it's disconnected?
+             // try_recv returns Disconnected if disconnected AND empty.
+             // So if we got Empty, it's not disconnected (or not empty).
+             // If we got Disconnected, we broke the inner loop.
+             // But we need to check if we should exit the outer loop.
+             // We can check if decoder_handle is finished? No.
+             // We rely on TryRecvError::Disconnected.
+             // Let's add a flag.
+        }
         
-        // Update moving average frame time
-        let frame_end = clock.elapsed();
-        let frame_time = frame_end - elapsed;
-        avg_frame_time = Duration::from_secs_f64(
-            avg_frame_time.as_secs_f64() * (1.0 - EWMA_ALPHA) + 
-            frame_time.as_secs_f64() * EWMA_ALPHA
-        );
-        
-        frame_idx += 1;
+        // If we found a frame, render it
+        if let Some(frame) = frame_to_render {
+             // If the frame is WAY in the future (e.g. > 100ms), we should wait?
+             // But we already broke the loop if frame.timestamp > playback_time.
+             // So frame is either:
+             // 1. In the past (we are lagging, render immediately)
+             // 2. In the future (we caught up, wait until it's time)
+             
+             if frame.timestamp > playback_time {
+                 let wait_time = frame.timestamp - playback_time;
+                 if wait_time > Duration::from_millis(1) {
+                     std::thread::sleep(wait_time);
+                 }
+             }
+
+            processor.process_frame_into(&frame.buffer, &mut cell_buffer);
+            
+            if let Err(e) = display.render_diff(&cell_buffer, target_w as usize) {
+                crate::utils::logger::error(&format!("Render error: {}", e));
+                return Err(e);
+            }
+            frame_idx += 1;
+        } else {
+            // No frame available yet, or we are waiting for buffer
+            // Check if disconnected
+            if let Err(crossbeam_channel::TryRecvError::Disconnected) = frame_receiver.try_recv() {
+                 break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
     
     // Cleanup

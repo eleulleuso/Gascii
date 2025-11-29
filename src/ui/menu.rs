@@ -99,7 +99,10 @@ pub fn run_menu() -> Result<()> {
     }
 
     // 4. Select Mode
-    let modes = vec!["RGB TrueColor (최고 화질)", "ASCII (텍스트 모드)"];
+    let modes = vec![
+        "RGB TrueColor (최고 화질)", 
+        "ASCII 흑백 (텍스트 모드)"
+    ];
     let mode_selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("🎨 렌더링 모드 선택")
         .default(0)

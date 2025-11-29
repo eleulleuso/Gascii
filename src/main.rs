@@ -7,6 +7,7 @@ mod audio;
 mod decoder;
 mod renderer;
 mod ui;
+mod analyzer;
 
 use clap::{Parser, Subcommand};
 use anyhow::Result;

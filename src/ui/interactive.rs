@@ -60,52 +60,22 @@ pub fn run_game(
         if fill_screen { "전체화면" } else { "16:9" }
     );
 
-    // Audio extraction logic if needed
-    let mut final_audio_path: Option<String> = audio_path.map(|p| p.to_string_lossy().to_string());
-    
-    // Only try to find/extract audio if NO audio path was provided
-    if final_audio_path.is_none() {
-        let audio_dir = Path::new("assets/audio");
-        if !audio_dir.exists() {
-            fs::create_dir_all(audio_dir)?;
-        }
-
-        let video_stem = video_path.file_stem().unwrap().to_string_lossy();
-        let extracted_path = audio_dir.join(format!("{}_extracted.mp3", video_stem));
-        
-        if extracted_path.exists() {
-            final_audio_path = Some(extracted_path.to_string_lossy().to_string());
-        } else {
-            println!("ℹ️  오디오 추출 중...");
-            // Call ffmpeg
-            let status = std::process::Command::new("ffmpeg")
-                .arg("-i").arg(&video_path)
-                .arg("-vn")
-                .arg("-acodec").arg("libmp3lame")
-                .arg("-q:a").arg("2")
-                .arg(&extracted_path)
-                .arg("-y")
-                .arg("-hide_banner")
-                .arg("-loglevel").arg("error")
-                .status();
-                
-            if let Ok(s) = status {
-                if s.success() {
-                    println!("✅ 오디오 추출 완료");
-                    final_audio_path = Some(extracted_path.to_string_lossy().to_string());
-                } else {
-                    println!("⚠️  오디오 추출 실패 (ffmpeg 에러)");
-                }
-            } else {
-                println!("⚠️  ffmpeg를 찾을 수 없습니다. 오디오 없이 재생합니다.");
-            }
-        }
-    } else {
-        println!("🎵 사용자 지정 오디오 사용: {}", final_audio_path.as_ref().unwrap());
-    }
-
     // === START PRODUCER-CONSUMER IMPLEMENTATION WITH SYNC ===
     
+    // Run ANSI rendering (optimized for all videos)
+    eprintln!("🎨 ANSI 모드: 고성능 렌더링");
+    run_ansi_mode(video_path, audio_path, mode, target_w, target_h, fill_screen)
+}
+
+/// ANSI rendering pipeline (optimized for all content)
+fn run_ansi_mode(
+    video_path: PathBuf,
+    audio_path: Option<PathBuf>,
+    mode: DisplayMode,
+    target_w: u32,
+    target_h: u32,
+    fill_screen: bool
+) -> Result<()> {
     // Initialize display manager
     let mut display = DisplayManager::new(mode)?;
 
@@ -115,10 +85,10 @@ pub fn run_game(
     let pixel_h = target_h * 2;
     
     let decoder = VideoDecoder::new(
-        &video_path.to_string_lossy(),
+        video_path.to_str().unwrap(),
         pixel_w,
         pixel_h,
-        false // Force 'Fit' mode (Letterbox) to prevent cropping in Fullscreen
+        fill_screen
     )?;
     
     let fps = decoder.get_fps();
@@ -130,7 +100,7 @@ pub fn run_game(
     let decoder_handle = decoder.spawn_decoding_thread(frame_sender);
 
     // === SYNC SYSTEM ===
-    let clock = MasterClock::new();
+    let _clock = MasterClock::new();
     
     // Frame processor (expects pixel width and height)
     let processor = FrameProcessor::new(pixel_w as usize, pixel_h as usize);
@@ -153,7 +123,13 @@ pub fn run_game(
     // CONSUMER LOOP WITH DYNAMIC FRAME SKIP (A/V Sync)
     let mut frame_idx = 0u64;
     let mut frames_dropped = 0u64;
-    let mut audio_player = None; // Will start after first frame
+    
+    // Start audio if provided
+    let mut audio_player = if let Some(path) = audio_path {
+        Some(AudioPlayer::new(path.to_str().unwrap())?)
+    } else {
+        None
+    };
     
     crate::utils::logger::debug("Starting render loop");
     
@@ -187,18 +163,6 @@ pub fn run_game(
                     // If this is the very first frame, start the clock
                     if video_start_time.is_none() {
                         video_start_time = Some(now);
-                        // Start audio immediately
-                         if let Some(audio_path) = final_audio_path.as_ref() {
-                            match AudioPlayer::new(audio_path) {
-                                Ok(player) => {
-                                    crate::utils::logger::debug("Audio started (synced)");
-                                    audio_player = Some(player);
-                                }
-                                Err(e) => {
-                                    crate::utils::logger::error(&format!("Audio failed: {}", e));
-                                }
-                            }
-                        }
                     }
 
                     // If frame is in the future, save it and stop draining

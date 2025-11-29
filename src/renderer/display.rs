@@ -283,17 +283,31 @@ impl DisplayManager {
                         }
                     }
                     DisplayMode::Ascii => {
-                        // ASCII mode: No colors, just grayscale based on brightness
-                        // Convert RGB to grayscale: 0.299*R + 0.587*G + 0.114*B
+                        // ASCII mode: No colors, convert to grayscale ASCII art
+                        // Convert RGB to grayscale brightness: 0.299*R + 0.587*G + 0.114*B
+                        // We use the foreground color for brightness calculation
                         let brightness = (cell.fg.0 as u32 * 299 + cell.fg.1 as u32 * 587 + cell.fg.2 as u32 * 114) / 1000;
-                       
-// Simple ASCII shading: pick character based on brightness
-                        // We don't emit color codes in ASCII mode, just plain text
-                        // Note: The character itself already provides the visual representation
+                        
+                        // ASCII character set from darkest to brightest
+                        const ASCII_CHARS: &[char] = &[' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'];
+                        
+                        // Map brightness (0-255) to character index (0-9)
+                        let char_idx = ((brightness * (ASCII_CHARS.len() as u32 - 1)) / 255) as usize;
+                        let ascii_char = ASCII_CHARS[char_idx];
+                        
+                        // Write the ASCII character directly (no color codes)
+                        let mut b_dst = [0u8; 4];
+                        buffer.extend_from_slice(ascii_char.encode_utf8(&mut b_dst).as_bytes());
+                        
+                        last_cells[i] = *cell;
+                        cursor_x += 1;
+                        
+                        // Skip the normal character write below
+                        continue;
                     }
                 }
                 
-                // Write character
+                // Write character (RGB mode only, ASCII mode already wrote above)
                 let mut b_dst = [0u8; 4];
                 buffer.extend_from_slice(cell.char.encode_utf8(&mut b_dst).as_bytes());
                 

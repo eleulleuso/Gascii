@@ -1,11 +1,13 @@
-use anyhow::Result;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use anyhow::{Result, Context};
+use crossterm::terminal;
 use std::time::{Duration, Instant};
 use std::thread;
-
-use crate::core::display_manager::{DisplayManager, DisplayMode};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use crate::renderer::{DisplayManager, DisplayMode, FrameProcessor};
+use crate::decoder::VideoDecoder;
 use crate::core::audio_manager::AudioManager;
+use crate::core::frame_buffer::FrameBuffer;
 
 pub fn play_realtime(
     video_path: &str,
@@ -53,16 +55,16 @@ pub fn play_realtime(
 
     // 3. Start Video Decoder
     // println!("Initializing video decoder with target: {}x{}... fill={}", req_width, req_height, fill);
-    let mut decoder = crate::core::video_decoder::VideoDecoder::new(video_path, req_width, req_height, fill)?;
+    let mut decoder = VideoDecoder::new(video_path, req_width, req_height, fill)?;
     let actual_fps = decoder.get_fps();
     // println!("Video decoder started. Detected FPS: {:.2}", actual_fps);
     
     // 4. Initialize Frame Processor (Rayon)
-    let processor = crate::core::processor::FrameProcessor::new(req_width as usize, req_height as usize);
+    let processor = FrameProcessor::new(req_width as usize, req_height as usize);
 
     // 5. Create Ring Buffer (2 seconds)
     let buffer_capacity = (actual_fps * 2.0) as usize;
-    let frame_buffer = crate::core::frame_buffer::FrameBuffer::new(buffer_capacity);
+    let frame_buffer = FrameBuffer::new(buffer_capacity);
     let queue = frame_buffer.clone_queue();
 
     // 6. Spawn OpenCV Reader Thread (Producer)

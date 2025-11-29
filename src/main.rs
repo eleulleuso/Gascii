@@ -1,6 +1,12 @@
 mod core;
 mod utils;
-mod modules;
+
+// New direct module imports
+mod sync;
+mod audio;
+mod decoder;
+mod renderer;
+mod ui;
 
 use clap::{Parser, Subcommand};
 use anyhow::{Result, Context};
@@ -11,13 +17,13 @@ use std::thread;
 use crossterm::event::{self, Event, KeyCode};
 use serde_json::json;
 
-use crate::core::display_manager::{DisplayManager, DisplayMode};
+use crate::renderer::{DisplayManager, DisplayMode};
 use crate::core::audio_manager::AudioManager;
 use crate::core::frame_manager::FrameManager;
 use crate::core::extractor;
 
 // New module imports
-use crate::modules::ui::run_interactive_mode;
+use crate::ui::run_interactive_mode;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -148,7 +154,7 @@ fn play_animation(frames_dir: &str, audio_path: Option<&str>, fps: u32, mode: Di
 
     // 4. Initialize Frame Processor (based on first frame header) and Playback Loop
     // We will infer width/height from the first frame header if possible
-    let mut processor_opt: Option<crate::core::processor::FrameProcessor> = None;
+    let mut processor_opt: Option<crate::renderer::FrameProcessor> = None;
     let frame_duration = Duration::from_secs_f64(1.0 / fps as f64);
     let start_time = Instant::now();
     
@@ -185,7 +191,7 @@ fn play_animation(frames_dir: &str, audio_path: Option<&str>, fps: u32, mode: Di
 
                 // Initialize processor if not set
                 if processor_opt.is_none() {
-                    processor_opt = Some(crate::core::processor::FrameProcessor::new(w, h));
+                    processor_opt = Some(crate::renderer::FrameProcessor::new(w, h));
                 }
 
                 if let Some(processor) = processor_opt.as_ref() {

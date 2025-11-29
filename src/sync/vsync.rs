@@ -33,6 +33,15 @@ impl VSync {
     pub fn wait_for_next_frame(&mut self) {
         let now = Instant::now();
         
+        // If we're more than one frame duration behind, resync
+        // This prevents infinite drift where next_frame_time keeps getting further behind
+        if now > self.next_frame_time + self.frame_duration * 3 {
+            // Reset to current time to prevent runaway frame skipping
+            self.next_frame_time = now + self.frame_duration;
+            self.frames_rendered += 1;
+            return;
+        }
+        
         if now < self.next_frame_time {
             std::thread::sleep(self.next_frame_time - now);
         }
@@ -49,9 +58,10 @@ impl VSync {
         let elapsed = clock.elapsed();
         let expected_frame = (elapsed.as_secs_f64() * self.target_fps) as u64;
         
-        // If we're more than 2 frames behind, start dropping
+        // Only drop if we're more than 5 frames behind (very aggressive lag)
+        // Reduced from 2 to prevent premature frame dropping
         let behind_by = expected_frame.saturating_sub(self.frames_rendered);
-        behind_by > 2
+        behind_by > 5
     }
 
     /// Mark a frame as dropped

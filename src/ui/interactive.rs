@@ -3,11 +3,11 @@ use dialoguer::{theme::ColorfulTheme, Select};
 use std::path::{Path, PathBuf};
 use std::fs;
 
-// New module imports
-use crate::modules::renderer::{DisplayManager, DisplayMode, FrameProcessor, CellData};
-use crate::modules::decoder::{VideoDecoder, FrameData};
-use crate::modules::audio::AudioPlayer;
-use crate::modules::sync::{MasterClock, VSync};
+// Direct module imports
+use crate::renderer::{DisplayManager, DisplayMode, FrameProcessor};
+use crate::decoder::{VideoDecoder, FrameData};
+use crate::audio::AudioPlayer;
+use crate::sync::{MasterClock, VSync};
 
 /// 디버그 로그 파일에 메시지를 기록합니다.
 #[cfg(target_os = "macos")]
@@ -192,23 +192,6 @@ pub fn run_interactive_mode() -> Result<()> {
     
     // === SYNC SYSTEM ===
     let clock = MasterClock::new();
-    let mut vsync = VSync::new(fps);
-    
-    // Start audio playback if available
-    let mut audio_player = if let Some(audio_path) = final_audio_path {
-        match AudioPlayer::new(&audio_path) {
-            Ok(player) => {
-                println!("🔊 오디오 재생 시작 ({:.1} FPS sync)", fps);
-                Some(player)
-            }
-            Err(_) => {
-                println!("⚠️  오디오 재생 실패");
-                None
-            }
-        }
-    } else {
-        None
-    };
     
     // Frame processor (expects pixel width and height)
     let processor = FrameProcessor::new(target_w as usize, target_h as usize);
@@ -218,15 +201,25 @@ pub fn run_interactive_mode() -> Result<()> {
     
     // Performance tracking
     let start_time = std::time::Instant::now();
+    let frame_duration = std::time::Duration::from_secs_f64(1.0 / fps);
     
-    // CONSUMER LOOP WITH VSYNC
+    // CONSUMER LOOP WITH ABSOLUTE TIMING (Drift-free)
+    let mut frame_idx = 0u64;
+    let mut frames_dropped = 0u64;
+    let mut audio_player = None; // Will start after first frame
+    
     for frame_data in frame_receiver {
-        // Adaptive VSync: wait until it's time for next frame
-        vsync.wait_for_next_frame();
+        // Calculate when THIS frame should be displayed
+        let expected_time = frame_duration * frame_idx as u32;
+        let elapsed = clock.elapsed();
         
-        // Frame drop logic: skip rendering if we're too far behind
-        if vsync.should_drop_frame(&clock) {
-            vsync.drop_frame();
+        // Drift correction: sleep until the expected time
+        if elapsed < expected_time {
+            std::thread::sleep(expected_time - elapsed);
+        } else if elapsed > expected_time + frame_duration * 2 {
+            // More than 2 frames behind → skip this frame
+            frames_dropped += 1;
+            frame_idx += 1;
             continue;
         }
         
@@ -235,6 +228,23 @@ pub fn run_interactive_mode() -> Result<()> {
         
         // Render
         display.render_diff(&cell_buffer, target_w as usize)?;
+        
+        // Start audio AFTER first frame is rendered (for sync)
+        if audio_player.is_none() {
+            if let Some(audio_path) = final_audio_path.as_ref() {
+                match AudioPlayer::new(audio_path) {
+                    Ok(player) => {
+                        println!("🔊 오디오 시작 (첫 프레임 후)");
+                        audio_player = Some(player);
+                    }
+                    Err(_) => {
+                        println!("⚠️  오디오 재생 실패");
+                    }
+                }
+            }
+        }
+        
+        frame_idx += 1;
     }
     
     // Wait for decoder thread
@@ -244,12 +254,11 @@ pub fn run_interactive_mode() -> Result<()> {
     drop(audio_player);
     
     let duration = start_time.elapsed();
-    let stats = vsync.stats();
-    println!("\n✅ 재생 완료:");
-    println!("   • 렌더링: {} 프레임", stats.frames_rendered);
-    println!("   • 드롭: {} 프레임", stats.frames_dropped);
+    println!("\n✅ 재생 완료: (Absolute Timing - Drift-free)");
+    println!("   • 렌더링: {} 프레임", frame_idx);
+    println!("   • 드롭: {} 프레임", frames_dropped);
     println!("   • 재생 시간: {:.2}초", duration.as_secs_f64());
-    println!("   • 평균 FPS: {:.2}", stats.effective_fps(duration));
+    println!("   • 평균 FPS: {:.2}", frame_idx as f64 / duration.as_secs_f64());
 
     Ok(())
 }

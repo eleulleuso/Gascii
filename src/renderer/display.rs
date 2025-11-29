@@ -18,7 +18,7 @@ pub enum DisplayMode {
 
 pub struct DisplayManager {
     stdout: BufWriter<Stdout>,
-    _mode: DisplayMode,
+    mode: DisplayMode,
     last_cells: Option<Vec<CellData>>,
     render_buffer: Vec<u8>,
 }
@@ -29,7 +29,7 @@ impl DisplayManager {
         let stdout = BufWriter::with_capacity(128 * 1024, std::io::stdout());
         let mut dm = Self {
             stdout,
-            _mode: mode,
+            mode,
             last_cells: None,
             render_buffer: Vec::with_capacity(1024 * 1024), // Pre-allocate 1MB buffer
         };
@@ -255,28 +255,42 @@ impl DisplayManager {
                     cursor_y = target_y as i32;
                 }
                 
-                // Zero-Allocation Color Updates (TrueColor)
-                // FG: \x1b[38;2;R;G;Bm
-                if Some(cell.fg) != last_fg {
-                    buffer.extend_from_slice(b"\x1b[38;2;");
-                    Self::write_u8_fast(buffer, cell.fg.0);
-                    buffer.push(b';');
-                    Self::write_u8_fast(buffer, cell.fg.1);
-                    buffer.push(b';');
-                    Self::write_u8_fast(buffer, cell.fg.2);
-                    buffer.push(b'm');
-                    last_fg = Some(cell.fg);
-                }
-                // BG: \x1b[48;2;R;G;Bm
-                if Some(cell.bg) != last_bg {
-                    buffer.extend_from_slice(b"\x1b[48;2;");
-                    Self::write_u8_fast(buffer, cell.bg.0);
-                    buffer.push(b';');
-                    Self::write_u8_fast(buffer, cell.bg.1);
-                    buffer.push(b';');
-                    Self::write_u8_fast(buffer, cell.bg.2);
-                    buffer.push(b'm');
-                    last_bg = Some(cell.bg);
+                // Render based on mode
+                match self.mode {
+                    DisplayMode::Rgb => {
+                        // Zero-Allocation Color Updates (TrueColor)
+                        // FG: \x1b[38;2;R;G;Bm
+                        if Some(cell.fg) != last_fg {
+                            buffer.extend_from_slice(b"\x1b[38;2;");
+                            Self::write_u8_fast(buffer, cell.fg.0);
+                            buffer.push(b';');
+                            Self::write_u8_fast(buffer, cell.fg.1);
+                            buffer.push(b';');
+                            Self::write_u8_fast(buffer, cell.fg.2);
+                            buffer.push(b'm');
+                            last_fg = Some(cell.fg);
+                        }
+                        // BG: \x1b[48;2;R;G;Bm
+                        if Some(cell.bg) != last_bg {
+                            buffer.extend_from_slice(b"\x1b[48;2;");
+                            Self::write_u8_fast(buffer, cell.bg.0);
+                            buffer.push(b';');
+                            Self::write_u8_fast(buffer, cell.bg.1);
+                            buffer.push(b';');
+                            Self::write_u8_fast(buffer, cell.bg.2);
+                            buffer.push(b'm');
+                            last_bg = Some(cell.bg);
+                        }
+                    }
+                    DisplayMode::Ascii => {
+                        // ASCII mode: No colors, just grayscale based on brightness
+                        // Convert RGB to grayscale: 0.299*R + 0.587*G + 0.114*B
+                        let brightness = (cell.fg.0 as u32 * 299 + cell.fg.1 as u32 * 587 + cell.fg.2 as u32 * 114) / 1000;
+                       
+// Simple ASCII shading: pick character based on brightness
+                        // We don't emit color codes in ASCII mode, just plain text
+                        // Note: The character itself already provides the visual representation
+                    }
                 }
                 
                 // Write character

@@ -107,6 +107,7 @@ pub fn run_menu() -> Result<()> {
         .interact_on(&Term::stderr())?;
 
     let mode_str = if mode_selection == 0 { "rgb" } else { "ascii" };
+    eprintln!("🔍 DEBUG: 선택된 렌더링 모드: {}", mode_str);
 
     // 5. Select Screen Mode
     let screen_modes = vec!["전체 화면 (꽉 차게)", "원본 비율 (16:9)"];

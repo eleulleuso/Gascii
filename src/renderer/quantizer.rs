@@ -6,7 +6,7 @@
 
 use std::sync::OnceLock;
 
-static COLOR_LUT: OnceLock<[u8; 256 * 256 * 256]> = OnceLock::new();
+static COLOR_LUT: OnceLock<Vec<u8>> = OnceLock::new();
 
 pub struct ColorQuantizer;
 
@@ -22,8 +22,9 @@ impl ColorQuantizer {
     }
     
     /// Build look-up table mapping RGB to ANSI 256 colors
-    fn build_lut() -> [u8; 256 * 256 * 256] {
-        let mut lut = [0u8; 256 * 256 * 256];
+    fn build_lut() -> Vec<u8> {
+        // Allocate on heap directly to avoid stack overflow (16MB)
+        let mut lut = vec![0u8; 256 * 256 * 256];
         
         for r in 0..256 {
             for g in 0..256 {

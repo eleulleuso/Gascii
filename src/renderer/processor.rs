@@ -2,6 +2,19 @@ use rayon::prelude::*;
 use super::cell::CellData;
 use super::quantizer::ColorQuantizer;
 
+// 8x8 Bayer Matrix for Ordered Dithering
+// Values are 0..63
+const BAYER_8X8: [u8; 64] = [
+    0, 32,  8, 40,  2, 34, 10, 42,
+    48, 16, 56, 24, 50, 18, 58, 26,
+    12, 44,  4, 36, 14, 46,  6, 38,
+    60, 28, 52, 20, 62, 30, 54, 22,
+    3, 35, 11, 43,  1, 33,  9, 41,
+    51, 19, 59, 27, 49, 17, 57, 25,
+    15, 47,  7, 39, 13, 45,  5, 37,
+    63, 31, 55, 23, 61, 29, 53, 21,
+];
+
 pub struct FrameProcessor {
     pub width: usize,
     pub height: usize,
@@ -12,92 +25,91 @@ impl FrameProcessor {
         Self { width, height }
     }
 
-    // Process RGB frame into CellData grid using Half-Block rendering
-    // Half-Block: 1x Horizontal, 2x Vertical (▀ character)
-    // Canvas Width = Terminal Width (1x)
-    // Canvas Height = Terminal Height * 2 (2x)
-    // 
-    // OPTIMIZATION: Process rows in chunks for better cache locality
-    pub fn process_frame(&self, frame_data: &[u8]) -> Vec<CellData> {
-        let mut output = Vec::new();
-        self.process_frame_into(frame_data, &mut output);
-        output
+    pub fn process_frame(&self, pixel_data: &[u8]) -> Vec<CellData> {
+        let mut cells = vec![CellData { char: ' ', fg: 0, bg: 0 }; self.width * (self.height / 2)];
+        self.process_frame_into(pixel_data, &mut cells);
+        cells
     }
 
-    pub fn process_frame_into(&self, frame_data: &[u8], output: &mut Vec<CellData>) {
-        // Validate input size in debug builds to avoid unsafe out-of-bounds access.
-        let expected_len = self.width * self.height * 3;
-        debug_assert!(frame_data.len() >= expected_len, "Frame size is too small: got {} expected {}", frame_data.len(), expected_len);
-        let term_width = self.width;           // Canvas width IS terminal width
-        let term_height = self.height / 2;     // Canvas height is 2x terminal height
-        
-        // Resize output buffer if needed
-        let total_cells = term_width * term_height;
-        if output.len() != total_cells {
-            output.resize(total_cells, CellData { char: ' ', fg: 16, bg: 16 }); // Black (index 16)
+    pub fn process_frame_into(&self, pixel_data: &[u8], cells: &mut [CellData]) {
+        let w = self.width;
+        let h = self.height; // This is the pixel height
+        let term_height = h / 2; // Terminal height is half pixel height
+
+        // Ensure cells buffer is correct size
+        if cells.len() != w * term_height {
+            // In a real scenario, we might want to resize or error out.
+            // For now, we assume the caller provides the correct size.
+            return;
         }
 
-        // Rayon optimization: adaptive chunk size
-        // For small screens, use larger chunks to reduce task overhead
-        let num_cpus = rayon::current_num_threads();
-        let chunk_size = if term_height < 50 {
-            // Small screen: process serially (avoid parallelization overhead)
-            term_height
-        } else {
-            // Large screen: split into chunks per CPU
-            (term_height / num_cpus).max(4)
+        // Parallel processing using Rayon
+        // We use a chunk size that balances load balancing with overhead.
+        let chunk_size = if w * term_height > 10000 { 
+            2000 
+        } else { 
+            (w * term_height / rayon::current_num_threads().max(1)).max(1) 
         };
-        
-        let chunk_height = chunk_size;
-        let chunk_cells = term_width * chunk_height;
 
-        // Process in row-major order with optimized chunk size
-        output.par_chunks_mut(chunk_cells)
+        cells.par_chunks_mut(chunk_size)
             .enumerate()
-            .for_each(|(chunk_idx, chunk_cells)| {
-                let start_row = chunk_idx * chunk_height;
+            .for_each(|(chunk_idx, chunk)| {
+                let start_idx = chunk_idx * chunk_size;
                 
-                for local_y in 0..chunk_height {
-                    let cy = start_row + local_y;
-                    if cy >= term_height {
-                        break;
-                    }
+                for (i, cell) in chunk.iter_mut().enumerate() {
+                    let idx = start_idx + i;
+                    let cx = idx % w;
+                    let cy = idx / w; // This `cy` is the terminal character row
+
+                    // Map char coordinate (cx, cy) to pixel coordinates
+                    // Each char represents 2 vertical pixels (Upper Half Block)
+                    // Top pixel: (cx, cy * 2)
+                    // Bottom pixel: (cx, cy * 2 + 1)
                     
-                    for cx in 0..term_width {
-                        // Map char (cx, cy) to pixels: top=(cx, 2*cy), bottom=(cx, 2*cy+1)
-                        let py_top = cy * 2;
-                        let py_bottom = cy * 2 + 1;
+                    let py_top = cy * 2;
+                    let py_bottom = cy * 2 + 1;
 
-                        // Inline hot path for pixel access
-                        let get_pixel_fast = |x: usize, y: usize| -> (u8, u8, u8) {
-                            let p_idx = (y * self.width + x) * 3;
-                            if p_idx + 2 < frame_data.len() {
-                                unsafe {
-                                    (
-                                        *frame_data.get_unchecked(p_idx),
-                                        *frame_data.get_unchecked(p_idx + 1),
-                                        *frame_data.get_unchecked(p_idx + 2),
-                                    )
-                                }
-                            } else {
-                                (0, 0, 0)
-                            }
-                        };
+                    // Helper to get pixel color safely with dithering
+                    let get_pixel_dithered = |x: usize, y: usize| -> (u8, u8, u8) {
+                        let offset = (y * w + x) * 3;
+                        if offset + 2 < pixel_data.len() {
+                            let r = pixel_data[offset];
+                            let g = pixel_data[offset + 1];
+                            let b = pixel_data[offset + 2];
+                            
+                            // Apply Ordered Dithering
+                            // Threshold from Bayer Matrix (0..63)
+                            let threshold = BAYER_8X8[(y % 8) * 8 + (x % 8)];
+                            
+                            // Normalize threshold to -0.5 to 0.5 range (approx) 
+                            // and scale by spread factor.
+                            // Factor 32.0 means the noise spreads across +/- 16 values.
+                            // This is enough to bridge the gap between 256 colors.
+                            let spread = 32.0;
+                            let adjustment = (threshold as f32 - 31.5) / 63.0 * spread;
+                            
+                            let r_d = (r as f32 + adjustment).clamp(0.0, 255.0) as u8;
+                            let g_d = (g as f32 + adjustment).clamp(0.0, 255.0) as u8;
+                            let b_d = (b as f32 + adjustment).clamp(0.0, 255.0) as u8;
+                            
+                            (r_d, g_d, b_d)
+                        } else {
+                            (0, 0, 0)
+                        }
+                    };
 
-                        let top_color = get_pixel_fast(cx, py_top);
-                        let bottom_color = get_pixel_fast(cx, py_bottom);
-                        
-                        // Quantize RGB to ANSI 256 colors
-                        let fg_idx = ColorQuantizer::quantize_rgb(top_color.0, top_color.1, top_color.2);
-                        let bg_idx = ColorQuantizer::quantize_rgb(bottom_color.0, bottom_color.1, bottom_color.2);
+                    let top_color = get_pixel_dithered(cx, py_top);
+                    let bottom_color = get_pixel_dithered(cx, py_bottom);
 
-                        let cell_idx = local_y * term_width + cx;
-                        chunk_cells[cell_idx] = CellData {
-                            char: '▀', // Upper Half Block
-                            fg: fg_idx,
-                            bg: bg_idx,
-                        };
-                    }
+                    // Quantize RGB to ANSI 256 colors
+                    let fg_idx = ColorQuantizer::quantize_rgb(top_color.0, top_color.1, top_color.2);
+                    let bg_idx = ColorQuantizer::quantize_rgb(bottom_color.0, bottom_color.1, bottom_color.2);
+
+                    *cell = CellData {
+                        char: '▀', // Upper Half Block
+                        fg: fg_idx,
+                        bg: bg_idx,
+                    };
                 }
             });
     }
@@ -134,11 +146,21 @@ mod tests {
 
         let cells = proc.process_frame(&frame);
         assert_eq!(cells.len(), 2 * 2); // term_width * term_height
+        
+        // Expected quantized colors
+        // Note: Dithering might slightly alter values, but for pure colors (255,0,0) it should map to the primary color index
+        // Red (255,0,0) -> Index 196 (in 6x6x6 cube) or 9 (bright red) depending on quantization logic.
+        // Let's use the quantizer to get expected values.
+        let expected_red = ColorQuantizer::quantize_rgb(255, 0, 0);
+        let expected_green = ColorQuantizer::quantize_rgb(0, 255, 0);
+        let expected_blue = ColorQuantizer::quantize_rgb(0, 0, 255);
+        let expected_yellow = ColorQuantizer::quantize_rgb(255, 255, 0);
+
         // First terminal row cell 0 should be fg=red, bg=green
-        assert_eq!(cells[0].fg, (255,0,0));
-        assert_eq!(cells[0].bg, (0,255,0));
+        assert_eq!(cells[0].fg, expected_red);
+        assert_eq!(cells[0].bg, expected_green);
         // Second terminal row cell 0 should be fg=blue, bg=yellow
-        assert_eq!(cells[2].fg, (0,0,255));
-        assert_eq!(cells[2].bg, (255,255,0));
+        assert_eq!(cells[2].fg, expected_blue);
+        assert_eq!(cells[2].bg, expected_yellow);
     }
 }

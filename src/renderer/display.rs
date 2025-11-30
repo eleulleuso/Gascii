@@ -17,7 +17,8 @@ pub enum DisplayMode {
 }
 
 pub struct DisplayManager {
-    stdout: BufWriter<Stdout>,
+    // stdout: BufWriter<Stdout>, // Removed: Moved to writer thread
+    tx: crossbeam_channel::Sender<Vec<u8>>, // Channel to writer thread
     mode: DisplayMode,
     last_cells: Option<Vec<CellData>>,
     render_buffer: Vec<u8>,
@@ -25,13 +26,34 @@ pub struct DisplayManager {
 
 impl DisplayManager {
     pub fn new(mode: DisplayMode) -> Result<Self> {
-        // Use BufWriter with a large buffer (e.g., 128KB) to minimize syscalls
-        let stdout = BufWriter::with_capacity(128 * 1024, std::io::stdout());
+        // Create a bounded channel for frames
+        // Capacity 2 means we can have 1 frame being written, 1 waiting, and 1 being rendered
+        // If channel is full, we drop frames (backpressure) to avoid lag accumulation
+        let (tx, rx) = crossbeam_channel::bounded::<Vec<u8>>(2);
+
+        // Spawn dedicated I/O thread
+        std::thread::spawn(move || {
+            let stdout = std::io::stdout();
+            // Massive output buffer (4MB)
+            let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, stdout);
+            
+            while let Ok(data) = rx.recv() {
+                if let Err(e) = writer.write_all(&data) {
+                    eprintln!("I/O Error: {}", e);
+                    break;
+                }
+                if let Err(e) = writer.flush() {
+                    eprintln!("Flush Error: {}", e);
+                    break;
+                }
+            }
+        });
+
         let mut dm = Self {
-            stdout,
+            tx,
             mode,
             last_cells: None,
-            render_buffer: Vec::with_capacity(1024 * 1024), // Pre-allocate 1MB buffer
+            render_buffer: Vec::with_capacity(4 * 1024 * 1024), // Pre-allocate 4MB buffer
         };
         
         dm.initialize_terminal()?;
@@ -41,22 +63,19 @@ impl DisplayManager {
 
     fn initialize_terminal(&mut self) -> Result<()> {
         terminal::enable_raw_mode()?;
-        self.stdout.execute(EnterAlternateScreen)?;
-        self.stdout.execute(cursor::Hide)?;
         
-        // Disable line wrapping (DECRAWM) to prevent scrolling at edges
-        self.stdout.execute(Print("\x1b[?7l"))?;
+        // Prepare initialization sequence
+        let mut buffer = Vec::new();
+        // EnterAlternateScreen: \x1b[?1049h
+        buffer.extend_from_slice(b"\x1b[?1049h");
+        // Hide Cursor: \x1b[?25l
+        buffer.extend_from_slice(b"\x1b[?25l");
+        buffer.extend_from_slice(b"\x1b[?7l"); // Disable line wrap
+        buffer.extend_from_slice(b"\x1b[?2026h"); // Enable sync updates
+        buffer.extend_from_slice(b"\x1b[?12l"); // Disable cursor blink
         
-        // === STRONGER V-SYNC ENFORCEMENT ===
-        // Enable synchronized updates mode (DECSM 2026)
-        // This ensures terminal waits for complete frame before rendering
-        self.stdout.execute(Print("\x1b[?2026h"))?;
-        
-        // Disable cursor blinking (reduces screen tearing)
-        self.stdout.execute(Print("\x1b[?12l"))?;
-        
-        // Request high refresh rate mode if supported
-        self.stdout.execute(Print("\x1b[?1049h"))?; // Alternative screen buffer
+        // Send to writer thread
+        let _ = self.tx.send(buffer);
         
         Ok(())
     }
@@ -135,16 +154,29 @@ impl DisplayManager {
         }
     }
 
+    // Helper for color distance (Euclidean squared)
+    #[inline(always)]
+    fn color_distance_sq(c1: (u8, u8, u8), c2: (u8, u8, u8)) -> i32 {
+        let r = c1.0 as i32 - c2.0 as i32;
+        let g = c1.1 as i32 - c2.1 as i32;
+        let b = c1.2 as i32 - c2.2 as i32;
+        r * r + g * g + b * b
+    }
+
     // Optimized Diffing Renderer with Zero-Allocation and Dynamic Lossy Diffing
     pub fn render_diff(&mut self, cells: &[CellData], width: usize) -> Result<()> {
         let start_render = std::time::Instant::now();
         
+        // Reuse buffer
+        self.render_buffer.clear();
+        let buffer = &mut self.render_buffer;
+        
         // VSync Begin
-        self.stdout.queue(Print("\x1b[?2026h"))?;
+        buffer.extend_from_slice(b"\x1b[?2026h");
 
         let mut force_redraw = false;
         if self.last_cells.as_ref().map(|v| v.len()).unwrap_or(0) != cells.len() {
-            self.stdout.queue(crossterm::terminal::Clear(crossterm::terminal::ClearType::All))?;
+            buffer.extend_from_slice(b"\x1b[2J"); // Clear screen
             self.last_cells = Some(vec![CellData::default(); cells.len()]);
             force_redraw = true;
         }
@@ -188,15 +220,9 @@ impl DisplayManager {
         let mut cursor_y: i32 = -1;
 
         // Dynamic Lossy Diffing Threshold
-        // If previous render was slow (> 12ms), increase threshold to skip minor changes
-        // This helps maintain FPS during high-motion 3D scenes
-        // We use a static atomic or similar if we want persistence, but for now let's just use a fixed adaptive logic
-        // Actually, we can't easily store state here without modifying struct. 
-        // Let's use a simple heuristic: if we are forcing redraw, threshold is 0.
-        // Otherwise, we could pass it in. For now, let's hardcode a small threshold for 3D stability.
-        // Or better: calculate similarity.
-        
-        let diff_threshold = 10i32; // Squared distance threshold (very conservative)
+        // 3D video has noise. We skip updates if color difference is small.
+        // Threshold 100 is roughly sqrt(100) = 10 units in RGB space (perceptually small)
+        let diff_threshold = 100; 
 
         // Debug logging
         if std::env::var("BAD_APPLE_DEBUG").is_ok() {
@@ -220,14 +246,12 @@ impl DisplayManager {
             } else if cell.char != old_cell.char {
                 true
             } else {
-                // Check color distance (simple difference for indices, though not perceptually accurate)
-                // For 256 colors, indices are not linear, so diffing indices is rough.
-                // But for "Lossy Diffing", we can just check if they are identical for now.
-                // Or we can implement a lookup table for distance, but that's expensive.
-                // Let's just check equality for 256 colors as "Lossy Diffing" is less relevant 
-                // when we already quantized to 256 colors (which is lossy itself).
+                // Smart Diff: Check color distance
+                // If character is same, check if color changed significantly
+                let fg_diff = Self::color_distance_sq(cell.fg, old_cell.fg);
+                let bg_diff = Self::color_distance_sq(cell.bg, old_cell.bg);
                 
-                cell.fg != old_cell.fg || cell.bg != old_cell.bg
+                fg_diff > diff_threshold || bg_diff > diff_threshold
             };
 
             if is_different {
@@ -322,12 +346,19 @@ impl DisplayManager {
         }
 
         buffer.extend_from_slice(b"\x1b[0m");
-        self.stdout.write_all(buffer)?;
-        self.stdout.flush()?;
         
-        // End VSync AFTER flush to ensure complete frame is ready
-        self.stdout.queue(Print("\x1b[?2026l"))?;
-        self.stdout.flush()?;
+        // End VSync
+        buffer.extend_from_slice(b"\x1b[?2026l");
+
+        // Send buffer to writer thread
+        // try_send implements "drop frame if buffer full" logic
+        match self.tx.try_send(buffer.clone()) {
+            Ok(_) => {},
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                // Frame dropped (I/O slow)
+            },
+            Err(e) => return Err(anyhow::anyhow!("Channel error: {}", e)),
+        }
         
         let render_time = start_render.elapsed();
         if render_time.as_millis() > 10 {
@@ -350,9 +381,9 @@ impl DisplayManager {
 
 impl Drop for DisplayManager {
     fn drop(&mut self) {
-        let _ = self.stdout.execute(cursor::Show);
-        let _ = self.stdout.execute(LeaveAlternateScreen);
-        let _ = terminal::disable_raw_mode();
+        let mut buffer = Vec::new();
+        // Show Cursor: \x1b[?25h
+        buffer.extend_from_slice(b"\x1b[?25h");
+        let _ = self.tx.send(buffer);
     }
 }
-

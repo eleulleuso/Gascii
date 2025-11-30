@@ -37,6 +37,7 @@ echo "-----------------------"
 VIDEO_PATH=$(grep "__BAD_APPLE_CONFIG__VIDEO_PATH=" "$MENU_OUTPUT" | sed 's/__BAD_APPLE_CONFIG__//' | cut -d'=' -f2-)
 AUDIO_PATH=$(grep "__BAD_APPLE_CONFIG__AUDIO_PATH=" "$MENU_OUTPUT" | sed 's/__BAD_APPLE_CONFIG__//' | cut -d'=' -f2-)
 RENDER_MODE=$(grep "__BAD_APPLE_CONFIG__RENDER_MODE=" "$MENU_OUTPUT" | sed 's/__BAD_APPLE_CONFIG__//' | cut -d'=' -f2-)
+FONT_SIZE=$(grep "__BAD_APPLE_CONFIG__FONT_SIZE=" "$MENU_OUTPUT" | sed 's/__BAD_APPLE_CONFIG__//' | cut -d'=' -f2-)
 FILL_SCREEN=$(grep "__BAD_APPLE_CONFIG__FILL_SCREEN=" "$MENU_OUTPUT" | sed 's/__BAD_APPLE_CONFIG__//' | cut -d'=' -f2-)
 GHOSTTY_ARGS=$(grep "__BAD_APPLE_CONFIG__GHOSTTY_ARGS=" "$MENU_OUTPUT" | sed 's/__BAD_APPLE_CONFIG__//' | cut -d'=' -f2-)
 
@@ -57,7 +58,7 @@ echo "Ghostty Args: '$GHOSTTY_ARGS'"
 
 # Build the command arguments array
 # Note: Subcommand is 'play-live', not '--play-live'
-ARGS=(play-live --video "$VIDEO_PATH" --mode "$RENDER_MODE")
+ARGS=(play-live --video "$VIDEO_PATH" --mode "$RENDER_MODE" --font-size "$FONT_SIZE")
 
 if [ -n "$AUDIO_PATH" ]; then
     ARGS+=(--audio "$AUDIO_PATH")

@@ -20,7 +20,8 @@ pub fn run_game(
     video_path: PathBuf,
     audio_path: Option<PathBuf>,
     mode: DisplayMode,
-    fill_screen: bool
+    fill_screen: bool,
+    font_size: f32
 ) -> Result<()> {
     // 1. Terminal Setup
     let (terminal_w, terminal_h) = {
@@ -64,7 +65,37 @@ pub fn run_game(
     
     // Run ANSI rendering (optimized for all videos)
     eprintln!("🎨 ANSI 모드: 고성능 렌더링");
-    run_ansi_mode(video_path, audio_path, mode, target_w, target_h, fill_screen)
+    run_ansi_mode(video_path, audio_path, mode, target_w, target_h, fill_screen, font_size)
+}
+
+/// Helper to update Ghostty config font size
+fn update_ghostty_config(font_size: f32) -> Result<()> {
+    let config_path = Path::new("Gascii.config");
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(config_path)?;
+    let mut new_lines = Vec::new();
+    let mut updated = false;
+
+    for line in content.lines() {
+        if line.trim().starts_with("font-size =") {
+            new_lines.push(format!("font-size = {:.1}", font_size));
+            updated = true;
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    if updated {
+        std::fs::write(config_path, new_lines.join("\n"))?;
+        eprintln!("⚙️  Updated Gascii.config font-size to {:.1}", font_size);
+        // Give terminal a moment to reload config and resize
+        std::thread::sleep(Duration::from_millis(500));
+    }
+
+    Ok(())
 }
 
 /// ANSI rendering pipeline (optimized for all content)
@@ -74,15 +105,34 @@ fn run_ansi_mode(
     mode: DisplayMode,
     target_w: u32,
     target_h: u32,
-    fill_screen: bool
+    fill_screen: bool,
+    font_size: f32
 ) -> Result<()> {
+    // === THREAD PRIORITY BOOST ===
+    // Try to set high priority for the rendering thread
+    use thread_priority::*;
+    if let Err(e) = set_current_thread_priority(ThreadPriority::Max) {
+        eprintln!("⚠️  Failed to set thread priority: {:?}", e);
+    } else {
+        eprintln!("🚀 Thread priority boosted to MAX");
+    }
+
+    // === MANUAL OPTIMIZATION (FONT SIZE) ===
+    eprintln!("⚙️  Applying Font Size: {:.1}", font_size);
+    let _ = update_ghostty_config(font_size);
+    
+    // Re-read terminal size after config change (it might have changed)
+    let (new_w, new_h) = crossterm::terminal::size().unwrap_or((target_w as u16, target_h as u16));
+    let render_w = new_w as u32;
+    let render_h = new_h as u32;
+    
     // Initialize display manager
     let mut display = DisplayManager::new(mode)?;
 
     // Create video decoder
     // IMPORTANT: We use Half-Block rendering, so vertical resolution is 2x terminal rows
-    let pixel_w = target_w;
-    let pixel_h = target_h * 2;
+    let pixel_w = render_w;
+    let pixel_h = render_h * 2;
     
     let decoder = VideoDecoder::new(
         video_path.to_str().unwrap(),
@@ -91,7 +141,17 @@ fn run_ansi_mode(
         fill_screen
     )?;
     
-    let fps = decoder.get_fps();
+    let decoder_fps = decoder.get_fps();
+    
+    // Apply FPS cap for high performance mode (font >= 3.5)
+    // If user selected high performance, we also cap FPS to ensure smoothness
+    let effective_fps = if font_size >= 3.5 {
+        24.0f64.min(decoder_fps)
+    } else {
+        decoder_fps
+    };
+    
+    eprintln!("🎬 Video FPS: {:.1} → Render FPS: {:.1}", decoder_fps, effective_fps);
     
     // Create bounded channel (120 frames = ~4-5 seconds buffer)
     let (frame_sender, frame_receiver) = crossbeam_channel::bounded(120);
@@ -114,7 +174,7 @@ fn run_ansi_mode(
     
     // Performance tracking
     let start_time = std::time::Instant::now();
-    let frame_duration = std::time::Duration::from_secs_f64(1.0 / fps);
+    let frame_duration = std::time::Duration::from_secs_f64(1.0 / effective_fps);
     
     // Adaptive frame skip with EWMA
     let mut avg_frame_time = frame_duration;

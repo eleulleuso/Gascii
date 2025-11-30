@@ -112,7 +112,27 @@ pub fn run_menu() -> Result<()> {
     let mode_str = if mode_selection == 0 { "rgb" } else { "ascii" };
     eprintln!("🔍 DEBUG: 선택된 렌더링 모드: {}", mode_str);
 
-    // 5. Select Screen Mode
+    // 5. Select Performance (Font Size)
+    let font_options = vec![
+        "2.0 (고화질 - 애니메이션 추천)",
+        "3.5 (균형 - 일반 3D 영상)",
+        "4.0 (고성능 - 콘서트/고화질 3D)"
+    ];
+    let font_selection = Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("⚡ 성능 최적화 (폰트 크기)")
+        .default(0)
+        .items(&font_options)
+        .interact_on(&Term::stderr())?;
+
+    let font_size = match font_selection {
+        0 => "2.0",
+        1 => "3.5",
+        2 => "4.0",
+        _ => "2.5",
+    };
+    eprintln!("🔍 DEBUG: 선택된 폰트 크기: {}", font_size);
+
+    // 6. Select Screen Mode
     let screen_modes = vec!["전체 화면 (꽉 차게)", "원본 비율 (16:9)"];
     let screen_selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("🖥️ 화면 모드 선택")
@@ -145,6 +165,7 @@ pub fn run_menu() -> Result<()> {
         writeln!(stdout, "__BAD_APPLE_CONFIG__AUDIO_PATH=")?;
     }
     writeln!(stdout, "__BAD_APPLE_CONFIG__RENDER_MODE={}", mode_str)?;
+    writeln!(stdout, "__BAD_APPLE_CONFIG__FONT_SIZE={}", font_size)?;
     writeln!(stdout, "__BAD_APPLE_CONFIG__FILL_SCREEN={}", fill_str)?;
     writeln!(stdout, "__BAD_APPLE_CONFIG__GHOSTTY_ARGS={}", ghostty_args)?;
     stdout.flush()?;

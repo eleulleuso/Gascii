@@ -66,6 +66,8 @@ enum Commands {
         mode: DisplayMode,
         #[arg(short, long, default_value_t = false, help = "If true, Fill mode: crop to fill 16:9 box (center crop)")]
         fill: bool,
+        #[arg(long, default_value_t = 2.5, help = "Font size for Ghostty optimization")]
+        font_size: f32,
     },
     /// Detect platform info
     Detect,
@@ -96,11 +98,11 @@ fn main() -> Result<()> {
             // Legacy play command
             println!("Legacy Play command. Use PlayLive for real-time playback.");
         }
-        Commands::PlayLive { video, audio, width: _, height: _, fps: _, mode, fill } => {
+        Commands::PlayLive { video, audio, width: _, height: _, fps: _, mode, fill, font_size } => {
              let video_path = std::path::PathBuf::from(video);
              let audio_path = audio.as_ref().map(|p| std::path::PathBuf::from(p));
              
-             crate::ui::interactive::run_game(video_path, audio_path, *mode, *fill)?;
+             crate::ui::interactive::run_game(video_path, audio_path, *mode, *fill, *font_size)?;
         }
         Commands::Detect => {
              // Detect command has no input field in the struct definition I saw?

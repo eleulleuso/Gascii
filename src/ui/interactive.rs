@@ -185,16 +185,6 @@ fn run_ansi_mode(
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
                     // Decoder finished
                     // If we have a frame pending, render it, then exit
-                    if frame_to_render.is_none() {
-                        // Really done
-                        // Break outer loop
-                        // We need to return from the function or break the loop
-                        // Since we are inside a nested loop, we use a label or flag
-                        // But here, returning Ok(()) is fine if we are done?
-                        // Wait, we need to print stats.
-                        // Let's break outer loop.
-                        // But we can't break outer loop easily from here without label.
-                    }
                     break;
                 }
             }

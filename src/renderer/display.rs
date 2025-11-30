@@ -25,13 +25,14 @@ pub struct DisplayManager {
 
 impl DisplayManager {
     pub fn new(mode: DisplayMode) -> Result<Self> {
-        // Use BufWriter with a large buffer (e.g., 128KB) to minimize syscalls
-        let stdout = BufWriter::with_capacity(128 * 1024, std::io::stdout());
+        // Use BufWriter
+        // Massive output buffer to minimize system call overhead (4MB for smooth 3D rendering)
+        let stdout = BufWriter::with_capacity(4 * 1024 * 1024, std::io::stdout());
         let mut dm = Self {
             stdout,
             mode,
             last_cells: None,
-            render_buffer: Vec::with_capacity(1024 * 1024), // Pre-allocate 1MB buffer
+            render_buffer: Vec::with_capacity(4 * 1024 * 1024), // Pre-allocate 4MB buffer
         };
         
         dm.initialize_terminal()?;
@@ -135,7 +136,7 @@ impl DisplayManager {
         }
     }
 
-    // Optimized Diffing Renderer with Zero-Allocation and Dynamic Lossy Diffing
+    // Optimized Diffing Renderer with Zero-Allocation
     pub fn render_diff(&mut self, cells: &[CellData], width: usize) -> Result<()> {
         let start_render = std::time::Instant::now();
         
@@ -187,17 +188,6 @@ impl DisplayManager {
         let mut cursor_x: i32 = -1;
         let mut cursor_y: i32 = -1;
 
-        // Dynamic Lossy Diffing Threshold
-        // If previous render was slow (> 12ms), increase threshold to skip minor changes
-        // This helps maintain FPS during high-motion 3D scenes
-        // We use a static atomic or similar if we want persistence, but for now let's just use a fixed adaptive logic
-        // Actually, we can't easily store state here without modifying struct. 
-        // Let's use a simple heuristic: if we are forcing redraw, threshold is 0.
-        // Otherwise, we could pass it in. For now, let's hardcode a small threshold for 3D stability.
-        // Or better: calculate similarity.
-        
-        let diff_threshold = 10i32; // Squared distance threshold (very conservative)
-
         // Debug logging
         if std::env::var("BAD_APPLE_DEBUG").is_ok() {
             use std::fs::OpenOptions;
@@ -214,19 +204,11 @@ impl DisplayManager {
         for (i, cell) in cells.iter().enumerate() {
             let old_cell = &last_cells[i];
             
-            // Similarity check for Lossy Diffing
             let is_different = if force_redraw {
                 true
             } else if cell.char != old_cell.char {
                 true
             } else {
-                // Check color distance (simple difference for indices, though not perceptually accurate)
-                // For 256 colors, indices are not linear, so diffing indices is rough.
-                // But for "Lossy Diffing", we can just check if they are identical for now.
-                // Or we can implement a lookup table for distance, but that's expensive.
-                // Let's just check equality for 256 colors as "Lossy Diffing" is less relevant 
-                // when we already quantized to 256 colors (which is lossy itself).
-                
                 cell.fg != old_cell.fg || cell.bg != old_cell.bg
             };
 

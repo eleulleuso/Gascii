@@ -4,6 +4,45 @@ use std::path::{Path, PathBuf};
 use std::fs;
 
 pub fn run_menu() -> Result<()> {
+    // 0. Custom Font Size Selection (User Request)
+    use dialoguer::Input;
+    
+    // Read current config to find default
+    let config_path = Path::new("Gascii.config");
+    let mut current_font_size = "2.5".to_string();
+    if let Ok(content) = fs::read_to_string(config_path) {
+        for line in content.lines() {
+            if line.trim().starts_with("font-size") {
+                if let Some(val) = line.split('=').nth(1) {
+                    current_font_size = val.trim().to_string();
+                }
+                break;
+            }
+        }
+    }
+
+    let font_size_str: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("🔠 폰트 크기 입력 (예: 2.0, 4.0, 10.0)")
+        .default(current_font_size)
+        .interact_on(&Term::stderr())?;
+
+    // Update Gascii.config immediately
+    if let Ok(content) = fs::read_to_string(config_path) {
+        let new_content = content.lines().map(|line| {
+            if line.trim().starts_with("font-size") {
+                format!("font-size = {}", font_size_str)
+            } else {
+                line.to_string()
+            }
+        }).collect::<Vec<String>>().join("\n");
+        
+        if let Err(e) = fs::write(config_path, new_content) {
+            eprintln!("⚠️  Gascii.config 업데이트 실패: {}", e);
+        } else {
+            eprintln!("✅ Gascii.config 폰트 크기 저장 완료: {}", font_size_str);
+        }
+    }
+
     // 1. Scan for video files
     let video_dirs = vec![Path::new("assets/video"), Path::new("assets/vidio")];
     let mut video_dir = Path::new("assets/video");

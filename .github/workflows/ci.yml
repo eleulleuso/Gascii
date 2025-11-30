@@ -14,7 +14,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libopencv-dev clang libclang-dev build-essential lz4
+          sudo apt-get install -y pkg-config libopencv-dev clang libclang-dev build-essential lz4 libasound2-dev
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -28,6 +28,28 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy -- -D warnings || true
       - name: cargo test
+        run: cargo test --verbose
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install LLVM and Clang
+        run: choco install llvm
+      - name: Install OpenCV
+        run: |
+          choco install opencv
+          echo "OPENCV_LINK_LIBS=opencv_world4100" >> $env:GITHUB_ENV
+          echo "OPENCV_INCLUDE_PATHS=C:\tools\opencv\build\include" >> $env:GITHUB_ENV
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+      - name: Build
+        run: cargo build --verbose
+      - name: Test
         run: cargo test --verbose
 
   build-macos:

@@ -24,8 +24,8 @@ impl KittyRenderer {
             term_height,
         })
     }
-
-    /// Render a frame using Kitty Graphics Protocol
+    
+    // Render a frame using Kitty Graphics Protocol
     pub fn render_frame(&mut self, pixel_data: &[u8], width: u32, height: u32) -> Result<()> {
         // 1. Encode frame as PNG
         let png_data = self.encode_png(pixel_data, width, height)?;

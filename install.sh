@@ -60,7 +60,11 @@ if [ -w "$INSTALL_DIR" ]; then
     mv "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"
 else
     echo "sudo access required to move binary to $INSTALL_DIR"
-    sudo mv "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"
+    if ! sudo mv "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"; then
+        echo "❌ Failed to move binary. Please check your permissions."
+        rm "$TMP_FILE"
+        exit 1
+    fi
 fi
 
 echo "✅ Installation complete! Run '$BINARY_NAME' to start."

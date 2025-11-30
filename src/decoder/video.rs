@@ -157,8 +157,7 @@ impl VideoDecoder {
         // Convert OpenCV Mat (BGR) to fast_image_resize Image (RGB24)
         // First convert BGR to RGB
         let mut rgb_opencv = Mat::default();
-        imgproc::cvt_color(&frame, &mut rgb_opencv, imgproc::COLOR_BGR2RGB, 0,
-                          core::AlgorithmHint::ALGO_HINT_DEFAULT)?;
+        imgproc::cvt_color(&frame, &mut rgb_opencv, imgproc::COLOR_BGR2RGB, 0)?;
         
         // Get raw bytes
         if !rgb_opencv.is_continuous() {
